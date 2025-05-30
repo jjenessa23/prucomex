@@ -218,5 +218,3 @@ else:
         PAGES[st.session_state.current_page]()
     else:
         st.info(f"Página '{st.session_state.current_page}' em desenvolvimento ou não encontrada.")
-
-
