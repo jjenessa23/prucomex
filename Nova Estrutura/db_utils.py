@@ -56,6 +56,70 @@ def connect_db(db_path: str):
         logger.error(f"Erro ao conectar ao DB {db_path}: {e}")
         return None
 
+def hash_password(password: str, username: str) -> str:
+    """Hashes a password with a username as salt."""
+    password_salted = password + username
+    return hashlib.sha256(password_salted.encode('utf-8')).hexdigest()
+
+# NOVO: Função para criar a tabela de usuários (chamada por create_tables)
+def criar_tabela_users(conn):
+    """Cria a tabela 'users' se não existir e adiciona a coluna allowed_screens."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                allowed_screens TEXT
+            )
+        ''')
+        conn.commit()
+        logger.info("Tabela 'users' verificada/criada com sucesso.")
+
+        # Adicionar coluna 'allowed_screens' se não existir
+        cursor.execute("PRAGMA table_info(users)")
+        colunas = [info[1] for info in cursor.fetchall()]
+        if 'allowed_screens' not in colunas:
+            try:
+                cursor.execute("ALTER TABLE users ADD COLUMN allowed_screens TEXT")
+                conn.commit()
+                logger.info("Coluna 'allowed_screens' adicionada à tabela 'users'.")
+            except sqlite3.Error as e:
+                logger.error(f"Erro SQLite ao adicionar coluna 'allowed_screens': {e}")
+            except Exception as e:
+                 logger.exception("Erro inesperado ao adicionar coluna 'allowed_screens'")
+
+        # Adicionar um usuário admin padrão se a tabela estiver vazia
+        cursor.execute("SELECT COUNT(*) FROM users")
+        count = cursor.fetchone()[0]
+        logger.debug(f"Contagem de usuários na tabela 'users': {count}") # Debugging
+        if count == 0:
+             admin_username = "admin"
+             # Use 'admin' como senha padrão para o hash inicial
+             admin_password_hash = hash_password("admin", admin_username) # Hash da senha 'admin' com username 'admin'
+             logger.debug(f"Hash da senha admin padrão gerado: {admin_password_hash}") # Debugging
+             # Lista de telas disponíveis (sincronizar com AVAILABLE_SCREENS_LIST em user_management_page.py)
+             # Para o db_utils real, vamos usar uma lista mais abrangente ou a lista de telas
+             all_screens_default = "Home,Descrições,Listagem NCM,Follow-up Importação,Importar XML DI,Pagamentos,Custo do Processo,Cálculo Portonave,Análise de Documentos,Pagamentos Container,Cálculo de Tributos TTCE,Gerenciamento de Usuários"
+             try:
+                  cursor.execute("INSERT INTO users (username, password_hash, is_admin, allowed_screens) VALUES (?, ?, ?, ?)",
+                                 (admin_username, admin_password_hash, 1, all_screens_default))
+                  conn.commit()
+                  logger.info("Usuário admin padrão criado com acesso a todas as telas.")
+             except sqlite3.IntegrityError:
+                  logger.warning("Tentativa de criar usuário admin padrão, mas 'admin' já existe.")
+                  conn.rollback()
+             except Exception as e:
+                  logger.exception("Erro ao criar usuário admin padrão.")
+                  conn.rollback()
+        return True
+    except Exception as e:
+        logger.exception("Erro ao criar ou atualizar a tabela 'users'")
+        conn.rollback()
+        return False
+
 def create_tables():
     """Cria todas as tabelas necessárias para o aplicativo."""
     success = True
@@ -65,6 +129,24 @@ def create_tables():
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
         logger.info(f"Diretório de dados '{data_dir}' criado.")
+
+    # Create Users table (agora chama a nova função dedicada)
+    conn_users = connect_db(get_db_path("users"))
+    if conn_users:
+        try:
+            if not criar_tabela_users(conn_users): # Chama a função dedicada
+                success = False
+            conn_users.close()
+            logger.info("Tabela Users verificada/criada.")
+        except Exception as e:
+            logger.error(f"Erro ao criar tabela Users: {e}")
+            if conn_users: conn_users.rollback()
+            success = False
+        finally:
+            if conn_users: conn_users.close()
+    else:
+        success = False
+
 
     # Create XML DI tables
     conn_xml_di = connect_db(get_db_path("xml_di"))
@@ -156,7 +238,7 @@ def create_tables():
             conn_xml_di.rollback()
             success = False
         finally:
-            conn_xml_di.close()
+            if conn_xml_di: conn_xml_di.close()
     else:
         success = False
 
@@ -166,7 +248,7 @@ def create_tables():
         try:
             cursor = conn_produtos.cursor()
             # Mapeamento de colunas para a tabela de produtos (consistente com view_descricoes)
-            _COLS_MAP_PRODUTOS = {
+            _COLS_MAP_PRODUTOS_STRUCT = { # Usar um nome diferente para evitar conflito global
                 "id": {"text": "ID/Key ERP", "width": 120, "col_id": "id_key_erp"},
                 "nome": {"text": "Nome/Part", "width": 200, "col_id": "nome_part"},
                 "desc": {"text": "Descrição", "width": 350, "col_id": "descricao"},
@@ -174,10 +256,10 @@ def create_tables():
             }
             cursor.execute(f'''
                 CREATE TABLE IF NOT EXISTS produtos (
-                    {_COLS_MAP_PRODUTOS['id']['col_id']} TEXT PRIMARY KEY,
-                    {_COLS_MAP_PRODUTOS['nome']['col_id']} TEXT,
-                    {_COLS_MAP_PRODUTOS['desc']['col_id']} TEXT,
-                    {_COLS_MAP_PRODUTOS['ncm']['col_id']} TEXT
+                    {_COLS_MAP_PRODUTOS_STRUCT['id']['col_id']} TEXT PRIMARY KEY,
+                    {_COLS_MAP_PRODUTOS_STRUCT['nome']['col_id']} TEXT,
+                    {_COLS_MAP_PRODUTOS_STRUCT['desc']['col_id']} TEXT,
+                    {_COLS_MAP_PRODUTOS_STRUCT['ncm']['col_id']} TEXT
                 )
             ''')
             conn_produtos.commit()
@@ -187,7 +269,7 @@ def create_tables():
             conn_produtos.rollback()
             success = False
         finally:
-            conn_produtos.close()
+            if conn_produtos: conn_produtos.close()
     else:
         success = False
 
@@ -213,7 +295,7 @@ def create_tables():
             conn_ncm.rollback()
             success = False
         finally:
-            conn_ncm.close()
+            if conn_ncm: conn_ncm.close()
     else:
         success = False
 
@@ -237,7 +319,7 @@ def create_tables():
             conn_pagamentos.rollback()
             success = False
         finally:
-            conn_pagamentos.close()
+            if conn_pagamentos: conn_pagamentos.close()
     else:
         success = False
 
@@ -264,51 +346,15 @@ def create_tables():
 
     return success
 
-def create_user_table():
-    """Cria a tabela de usuários se não existir e insere um usuário admin padrão."""
-    conn = connect_db(get_db_path("users"))
-    if not conn: return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                is_admin INTEGER DEFAULT 0,
-                allowed_screens TEXT
-            )
-        ''')
-        conn.commit()
-        
-        # Check if default admin user exists
-        cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
-        if cursor.fetchone()[0] == 0:
-            admin_username = "admin"
-            admin_password_hash = hash_password("admin", admin_username) # Use 'admin' as password
-            # Default admin has access to all screens (mock list)
-            all_screens_mock = "Home,Descrições,Listagem NCM,Follow-up Importação,Importar XML DI,Detalhes DI e Cálculos,Custo do Processo,Análise de Documentos,Pagamentos Container,Cálculo de Tributos TTCE,Gerenciamento de Usuários"
-            cursor.execute("INSERT INTO users (username, password_hash, is_admin, allowed_screens) VALUES (?, ?, ?, ?)",
-                           (admin_username, admin_password_hash, 1, all_screens_mock))
-            conn.commit()
-            logger.info("Usuário 'admin' padrão criado.")
-        return True
-    except Exception as e:
-        logger.error(f"Erro ao criar tabela de usuários ou inserir admin: {e}")
-        conn.rollback()
-        return False
-    finally:
-        if conn: conn.close()
-
-def hash_password(password: str, username: str) -> str:
-    """Hashes a password with a username as salt."""
-    password_salted = password + username
-    return hashlib.sha256(password_salted.encode('utf-8')).hexdigest()
+# Removida a função create_user_table() legada.
+# Agora, a criação da tabela de usuários é feita por criar_tabela_users() que é chamada por create_tables().
 
 def verify_credentials(username: str, password: str) -> Optional[Dict[str, Any]]:
     """Verifies user credentials against the database."""
     conn = connect_db(get_db_path("users"))
-    if not conn: return None
+    if not conn:
+        logger.error("Falha na conexão com o DB de usuários para verificação de credenciais.")
+        return None
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT username, password_hash, is_admin, allowed_screens FROM users WHERE username = ?", (username,))
@@ -317,6 +363,7 @@ def verify_credentials(username: str, password: str) -> Optional[Dict[str, Any]]
         if user_data:
             db_username, stored_password_hash, is_admin, allowed_screens_str = user_data
             provided_password_hash = hash_password(password, db_username)
+            logger.debug(f"Verificando credenciais para '{username}'. Hash fornecido: {provided_password_hash}, Hash armazenado: {stored_password_hash}") # Debugging
 
             if provided_password_hash == stored_password_hash:
                 logger.info(f"Login bem-sucedido para o usuário: {username}")
@@ -868,3 +915,4 @@ def deletar_produto(db_path: str, id_key_erp: str):
         return False
     finally:
         if conn: conn.close()
+
