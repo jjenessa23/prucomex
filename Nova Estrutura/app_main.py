@@ -42,6 +42,7 @@ except ImportError:
 
     db_utils = MockDbUtils()
     logging.warning("Módulo 'db_utils' não encontrado. Usando simulação para desenvolvimento.")
+    st.info("DEBUG: Módulo 'db_utils' não encontrado, usando simulação. Se você tem um 'db_utils.py' real, verifique o caminho.")
 
 
 # Configuração de logging (simplificada para Streamlit)
@@ -58,23 +59,42 @@ def authenticate_user(username, password):
 # --- Inicialização do Banco de Dados ---
 # Garante que as tabelas existam ao iniciar o aplicativo
 if 'db_initialized' not in st.session_state:
+    st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
     # Tenta criar o diretório 'data' se não existir
     # Usa um caminho genérico para o diretório de dados, pois db_utils.get_db_path("xml_di")
     # pode não ser a forma ideal de obter o diretório raiz para todos os DBs.
     # O followup_db_manager já cuida da criação do seu próprio diretório 'data'.
     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-        logger.info(f"Diretório de dados '{data_dir}' criado.")
+        try:
+            os.makedirs(data_dir)
+            logger.info(f"Diretório de dados '{data_dir}' criado.")
+            st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
+        except OSError as e:
+            logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
+            st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
+            st.session_state.db_initialized = False
+            # Não continue se o diretório não puder ser criado
+            st.stop() # Adicionado st.stop() para evitar que o app continue com erro crítico
+    else:
+        st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
+
 
     # Tenta criar as tabelas gerais e de usuário
-    if db_utils.create_tables() and db_utils.create_user_table():
+    tables_created_general = db_utils.create_tables()
+    tables_created_user = db_utils.create_user_table()
+
+    st.info(f"DEBUG: Resultado create_tables(): {tables_created_general}")
+    st.info(f"DEBUG: Resultado create_user_table(): {tables_created_user}")
+
+    if tables_created_general and tables_created_user:
         st.session_state.db_initialized = True
         logger.info("Bancos de dados e tabelas inicializados com sucesso.")
+        st.success("DEBUG: Bancos de dados e tabelas inicializados com sucesso.")
     else:
         st.session_state.db_initialized = False
         logger.error("Falha ao inicializar bancos de dados e tabelas.")
-        st.error("Erro crítico: Não foi possível inicializar o banco de dados. Verifique os logs.")
+        st.error("ERRO CRÍTICO: Falha ao inicializar bancos de dados e tabelas. Verifique os logs.")
 
 # --- Estado da Sessão ---
 # Inicializa as variáveis de estado da sessão se ainda não existirem
@@ -234,3 +254,4 @@ else:
         PAGES[st.session_state.current_page]()
     else:
         st.info(f"Página '{st.session_state.current_page}' em desenvolvimento ou não encontrada.")
+
