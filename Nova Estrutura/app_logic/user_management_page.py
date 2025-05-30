@@ -434,85 +434,68 @@ def show_page():
 
     if not df_users.empty:
         # Colunas a serem exibidas e configuradas
+        # Removendo ButtonColumn pois não é suportado na versão atual do Streamlit
         column_config = {
-            # Mover 'id' para a primeira posição para que o checkbox de seleção fique ao lado
             "id": st.column_config.NumberColumn("ID", width="small"), 
             "username": st.column_config.TextColumn("Usuário", width="medium"),
             "is_admin": st.column_config.TextColumn("Admin?", width="small"),
-            "allowed_screens": st.column_config.TextColumn("Telas Permitidas", width="large"),
-            # NOVO: Botões de Ação na Linha
-            "Editar": st.column_config.ButtonColumn("Editar", help="Editar usuário selecionado"),
-            "Excluir": st.column_config.ButtonColumn("Excluir", help="Excluir usuário selecionado"),
-            "Senha": st.column_config.ButtonColumn("Senha", help="Alterar senha do usuário selecionado")
+            "allowed_screens": st.column_config.TextColumn("Telas Permitidas", width="large")
         }
 
-        # Criar o DataFrame com as colunas de ação (Streamlit as renderizará como botões)
-        # O DataFrame precisa ter colunas com os nomes dos botões (ex: "Editar", "Excluir", "Senha")
-        # e o valor da célula acionará o botão.
-        df_users_with_actions = df_users.copy()
-        df_users_with_actions["Editar"] = "Editar" # O texto do botão
-        df_users_with_actions["Excluir"] = "Excluir" # O texto do botão
-        df_users_with_actions["Senha"] = "Alterar Senha" # O texto do botão
-
-        # Reordenar as colunas do DataFrame para exibição (ID primeiro, ações no final)
-        df_users_display_ordered = df_users_with_actions[[
-            "id", "username", "is_admin", "allowed_screens", 
-            "Editar", "Excluir", "Senha"
-        ]]
+        # Reordenar as colunas do DataFrame para que 'id' seja a primeira
+        df_users_display_ordered = df_users[["id", "username", "is_admin", "allowed_screens"]]
 
         # Exibir a tabela de usuários
-        # Removido on_select="rerun" pois o clique nos botões já vai rerunnar.
-        # Manter selection_mode="single-row" para o visual de seleção.
-        st.dataframe(
+        selected_user_row = st.dataframe(
             df_users_display_ordered, 
             column_config=column_config,
             hide_index=False, # Manter False para mostrar o checkbox de seleção
             use_container_width=True,
-            selection_mode="single-row", # Permite seleção única visual
-            key="users_table_actions" # Chave diferente para evitar conflito se a seleção for usada em outros lugares
-            # on_select="rerun" # Comentado pois o clique nos botões já fará o rerun
+            selection_mode="single-row",
+            key="users_table",
+            on_select="rerun" # Força um rerun quando uma linha é selecionada
         )
-        
-        # --- Lógica de Ação dos Botões na Tabela ---
-        # Acessar a seleção da tabela para ver qual botão foi clicado
-        # Streamlit 1.x e 2.x usam `st.session_state.key_do_dataframe['column_values']`
-        # para botões clicáveis.
-        selected_user_row_data = st.session_state.get("users_table_actions", {}).get('clicked_button')
 
-        if selected_user_row_data:
-            clicked_col_name = selected_user_row_data['column']
-            clicked_row_index = selected_user_row_data['row'] # Este é o índice no DataFrame exibido
-
-            # Obter os dados do usuário correspondente do DataFrame original
-            selected_username_from_display = df_users_display_ordered.iloc[clicked_row_index]['username']
+        # Lógica para botões de edição/exclusão baseada na seleção da tabela
+        # Estes botões aparecerão ABAIXO da tabela quando uma linha for selecionada
+        if selected_user_row and selected_user_row.get('selection', {}).get('rows'):
+            selected_index = selected_user_row['selection']['rows'][0]
+            
+            # Obter o username da linha selecionada na tabela exibida
+            selected_username_from_display = df_users_display_ordered.iloc[selected_index]['username']
+            
+            # Usar o username para buscar o ID correspondente na lista de dados original (st.session_state.users_data_for_display)
             selected_original_user = next((u for u in st.session_state.users_data_for_display if u.get('username') == selected_username_from_display), None)
 
             if selected_original_user:
                 selected_user_id = selected_original_user['id']
                 selected_username = selected_original_user['username']
 
-                st.write(f"DEBUG: Botão '{clicked_col_name}' clicado para Usuário: {selected_username} (ID: {selected_user_id})")
+                st.write(f"DEBUG: Usuário selecionado na tabela - ID: {selected_user_id}, Nome: {selected_username}")
+                
+                # Botões de ação abaixo da tabela
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button(f"Editar Usuário: {selected_username}", key=f"edit_user_{selected_user_id}"):
+                        st.session_state.editing_user_id = selected_user_id
+                        st.session_state.show_edit_user_form = True
+                        st.rerun()
+                with col2:
+                    if st.button(f"Excluir Usuário: {selected_username}", key=f"delete_user_{selected_user_id}"):
+                        st.session_state.delete_user_id_to_confirm = selected_user_id
+                        st.session_state.delete_user_name_to_confirm = selected_username
+                        st.session_state.show_delete_user_confirm_popup = True
+                        st.rerun()
+                with col3:
+                    if st.button(f"Alterar Senha: {selected_username}", key=f"change_password_{selected_user_id}"):
+                        st.session_state.change_password_user_id = selected_user_id
+                        st.session_state.change_password_username = selected_username
+                        st.session_state.show_change_password_form = True
+                        st.rerun()
+        else:
+            st.info("Selecione um usuário na tabela para editar, excluir ou alterar a senha.")
 
-                if clicked_col_name == "Editar":
-                    st.session_state.editing_user_id = selected_user_id
-                    st.session_state.show_edit_user_form = True
-                    st.rerun()
-                elif clicked_col_name == "Excluir":
-                    st.session_state.delete_user_id_to_confirm = selected_user_id
-                    st.session_state.delete_user_name_to_confirm = selected_username
-                    st.session_state.show_delete_user_confirm_popup = True
-                    st.rerun()
-                elif clicked_col_name == "Senha":
-                    st.session_state.change_password_user_id = selected_user_id
-                    st.session_state.change_password_username = selected_username
-                    st.session_state.show_change_password_form = True
-                    st.rerun()
-            else:
-                st.error(f"Erro: Usuário '{selected_username_from_display}' não encontrado nos dados originais após clique no botão.")
-        # else: # Este else não é mais necessário aqui, a mensagem de seleção vai abaixo
-            # st.info("Selecione um usuário na tabela para editar, excluir ou alterar a senha.")
-
-    else: # Se o DataFrame de usuários estiver vazio, não mostra nada e exibe a mensagem abaixo.
+    else:
         st.info("Nenhum usuário cadastrado. Adicione um novo usuário.")
 
     st.markdown("---")
