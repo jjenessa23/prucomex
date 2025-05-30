@@ -5,9 +5,10 @@ import openpyxl # Para gerar e ler arquivos Excel
 import logging
 
 # Importar funções do novo módulo de utilitários de banco de dados
+# Assumimos que db_utils.py existe e está no PYTHONPATH ou no mesmo diretório/subdiretório 'app_logic'
 from db_utils import (
     get_db_path,
-    connect_db, # Pode ser útil para depuração, mas não é usado diretamente nas funções de CRUD de produto aqui
+    connect_db,
     inserir_ou_atualizar_produto,
     selecionar_todos_produtos,
     selecionar_produto_por_id,
@@ -53,32 +54,45 @@ def show_page():
         """Carrega todos os produtos do DB e atualiza o estado da sessão."""
         db_path = get_db_path("produtos") # Assume que 'produtos' é um tipo de DB no db_utils
         if not db_path:
-            st.error("Caminho do banco de dados de produtos não configurado.")
-            return
-
-        # Verifica se o DB está acessível antes de tentar carregar
-        conn = connect_db(db_path)
-        if not conn:
-            st.warning("Não foi possível conectar ao banco de dados de produtos. Tente novamente mais tarde.")
+            st.error("Caminho do banco de dados de produtos não configurado. Por favor, verifique a configuração de 'db_utils'.")
             st.session_state.produtos_data = []
-            st.session_state.produtos_data_df = pd.DataFrame() # Define um DataFrame vazio para evitar erros
+            st.session_state.produtos_data_df = pd.DataFrame()
             return
 
-        produtos = selecionar_todos_produtos(db_path)
-        conn.close() # Fechar a conexão após a operação
+        st.info(f"Tentando conectar ao banco de dados de produtos em: {db_path}") # Debugging
+        conn = connect_db(db_path)
+        if conn is None: # connect_db retorna None em caso de falha
+            st.error("Não foi possível conectar ao banco de dados de produtos. Verifique os logs para detalhes da conexão.")
+            st.session_state.produtos_data = []
+            st.session_state.produtos_data_df = pd.DataFrame()
+            return
 
-        # Converte para lista de dicionários para facilitar o uso no Streamlit
-        st.session_state.produtos_data = [
-            {col_info['col_id']: p[i] for i, col_info in enumerate(_COLS_MAP_PRODUTOS.values())}
-            for p in produtos
-        ]
-        st.session_state.produtos_data_df = pd.DataFrame(st.session_state.produtos_data)
-        # Formatar NCM para exibição
-        if not st.session_state.produtos_data_df.empty:
-            st.session_state.produtos_data_df['ncm'] = st.session_state.produtos_data_df['ncm'].apply(_format_ncm)
+        try:
+            produtos = selecionar_todos_produtos(db_path)
+            conn.close() # Fechar a conexão após a operação
 
-        logger.info(f"Carregados {len(produtos)} produtos do DB.")
-        # st.rerun() # Não chamar rerun aqui para evitar loop infinito com on_change
+            # Converte para lista de dicionários para facilitar o uso no Streamlit
+            st.session_state.produtos_data = [
+                {col_info['col_id']: p[i] for i, col_info in enumerate(_COLS_MAP_PRODUTOS.values())}
+                for p in produtos
+            ]
+            st.session_state.produtos_data_df = pd.DataFrame(st.session_state.produtos_data)
+            # Formatar NCM para exibição
+            if not st.session_state.produtos_data_df.empty:
+                st.session_state.produtos_data_df['ncm'] = st.session_state.produtos_data_df['ncm'].apply(_format_ncm)
+
+            logger.info(f"Carregados {len(produtos)} produtos do DB.")
+            if not produtos:
+                st.info("Nenhum produto encontrado no banco de dados. Adicione um novo ou importe via Excel.")
+        except Exception as e:
+            st.error(f"Erro ao carregar produtos do banco de dados: {e}. Verifique a estrutura da tabela e os dados.")
+            logger.exception("Erro durante o carregamento de produtos.")
+            st.session_state.produtos_data = []
+            st.session_state.produtos_data_df = pd.DataFrame()
+        finally:
+            if conn:
+                conn.close()
+
 
     def add_or_update_produto(produto_id, nome, desc, ncm):
         """Adiciona ou atualiza um produto no DB."""
@@ -329,8 +343,10 @@ def show_page():
     st.markdown("##### Produtos Cadastrados")
 
     # Garante que os dados sejam carregados na primeira execução ou se o estado mudar
+    # Apenas carrega se ainda não houver dados, para evitar recargas desnecessárias
+    # ou se a página for acessada pela primeira vez.
     if not st.session_state.produtos_data:
-        load_produtos()
+        load_produtos() # Chamar load_produtos para carregar os dados
 
     df_display = st.session_state.produtos_data_df
 
@@ -399,3 +415,4 @@ def show_page():
 # A lista st.session_state.produtos_selecionados_ids_list será mantida apenas se for necessário um multi-select para exportação
 # como no `view_descricoes.py` original. Mantive o `produtos_selecionados_ids_list` no `st.session_state`
 # e o botão "Exportar Selecionados" acima, que usa essa lista.
+
