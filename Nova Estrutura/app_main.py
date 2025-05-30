@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 import logging
+import sqlite3 # Importar sqlite3 para manipulação de arquivos de DB
 
 # st.set_page_config() DEVE SER A PRIMEIRA CHAMADA STREAMLIT NO SCRIPT
 st.set_page_config(layout="wide", page_title="Gerenciamento COMEX")
@@ -26,11 +27,38 @@ except ImportError:
         def create_tables(self):
             # Simula a criação de tabelas
             logging.info("Simulando criação de tabelas gerais.")
-            return True
+            # Para depuração, vamos simular a criação e verificar se o arquivo existe
+            try:
+                # Tentar criar alguns arquivos .db para simular
+                db_names = ["produtos", "xml_di", "ncm", "pagamentos", "users"]
+                for db_name in db_names:
+                    db_path = self.get_db_path(db_name)
+                    # Forçar a remoção do arquivo se ele não for um DB válido ou estiver corrompido
+                    if os.path.exists(db_path):
+                        try:
+                            # Tentar abrir como DB para verificar integridade
+                            conn_check = sqlite3.connect(db_path)
+                            conn_check.close()
+                        except sqlite3.Error:
+                            # Se não for um DB válido, remover
+                            os.remove(db_path)
+                            logging.warning(f"Arquivo '{db_path}' não é um DB SQLite válido, removido.")
+                            st.warning(f"DEBUG: Arquivo '{db_path}' não é um DB SQLite válido, removido.")
+                    
+                    # Criar o DB se não existir ou foi removido
+                    conn = sqlite3.connect(db_path)
+                    conn.close()
+                    logging.info(f"Simulando criação de tabela para {db_name}.db.")
+                return True
+            except Exception as e:
+                logging.error(f"Erro na simulação de criação de tabelas: {e}")
+                st.error(f"ERRO SIMULADO DB: {e}")
+                return False
 
         def create_user_table(self):
             # Simula a criação da tabela de usuários
             logging.info("Simulando criação da tabela de usuários.")
+            # A criação real da tabela de usuários seria aqui, usando sqlite3.connect e cursor.execute
             return True
         
         def get_db_path(self, db_name):
@@ -39,6 +67,16 @@ except ImportError:
             _app_root_path = os.path.dirname(_base_path) if os.path.basename(_base_path) == 'app_logic' else _base_path
             _DEFAULT_DB_FOLDER = "data"
             return os.path.join(_app_root_path, _DEFAULT_DB_FOLDER, f"{db_name}.db")
+        
+        def connect_db(self, db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                return conn
+            except Exception as e:
+                logging.error(f"Erro ao conectar ao DB em {db_path}: {e}")
+                return None
+
 
     db_utils = MockDbUtils()
     logging.warning("Módulo 'db_utils' não encontrado. Usando simulação para desenvolvimento.")
@@ -61,9 +99,6 @@ def authenticate_user(username, password):
 if 'db_initialized' not in st.session_state:
     st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
     # Tenta criar o diretório 'data' se não existir
-    # Usa um caminho genérico para o diretório de dados, pois db_utils.get_db_path("xml_di")
-    # pode não ser a forma ideal de obter o diretório raiz para todos os DBs.
-    # O followup_db_manager já cuida da criação do seu próprio diretório 'data'.
     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     if not os.path.exists(data_dir):
         try:
@@ -81,11 +116,14 @@ if 'db_initialized' not in st.session_state:
 
 
     # Tenta criar as tabelas gerais e de usuário
+    st.info("DEBUG: Chamando db_utils.create_tables()...")
     tables_created_general = db_utils.create_tables()
-    tables_created_user = db_utils.create_user_table()
+    st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
 
-    st.info(f"DEBUG: Resultado create_tables(): {tables_created_general}")
-    st.info(f"DEBUG: Resultado create_user_table(): {tables_created_user}")
+    st.info("DEBUG: Chamando db_utils.create_user_table()...")
+    tables_created_user = db_utils.create_user_table()
+    st.info(f"DEBUG: Resultado db_utils.create_user_table(): {tables_created_user}")
+
 
     if tables_created_general and tables_created_user:
         st.session_state.db_initialized = True
