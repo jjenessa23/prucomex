@@ -3,6 +3,9 @@ import os
 import sys
 import logging
 
+# st.set_page_config() DEVE SER A PRIMEIRA CHAMADA STREAMLIT NO SCRIPT
+st.set_page_config(layout="wide", page_title="Gerenciamento COMEX")
+
 # Importar o módulo de utilitários de banco de dados (assumindo que db_utils existe e é acessível)
 # Você precisaria ter um arquivo db_utils.py no mesmo nível ou em um pacote configurado.
 # Para este exemplo, vamos simular algumas funções básicas de db_utils.
@@ -120,7 +123,7 @@ PAGES = {
 }
 
 # --- Layout da Aplicação Streamlit ---
-st.set_page_config(layout="wide", page_title="Gerenciamento COMEX")
+# st.set_page_config(layout="wide", page_title="Gerenciamento COMEX") # MOVIDO PARA O TOPO
 
 # --- Tela de Login ---
 if not st.session_state.authenticated:
