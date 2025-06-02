@@ -415,4 +415,3 @@ def show_page():
 # A lista st.session_state.produtos_selecionados_ids_list será mantida apenas se for necessário um multi-select para exportação
 # como no `view_descricoes.py` original. Mantive o `produtos_selecionados_ids_list` no `st.session_state`
 # e o botão "Exportar Selecionados" acima, que usa essa lista.
-

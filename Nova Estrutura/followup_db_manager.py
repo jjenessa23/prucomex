@@ -74,6 +74,25 @@ def conectar_followup_db():
         logger.exception(f"Erro ao conectar ao DB de Follow-up em {followup_db_path}")
         return None
 
+def adicionar_coluna_se_nao_existe(conn, column_name, column_type, default_value=None):
+    """Adiciona uma coluna à tabela 'processos' se ela não existir."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"PRAGMA table_info(processos)")
+        columns = [info[1] for info in cursor.fetchall()]
+        if column_name not in columns:
+            if default_value is not None:
+                cursor.execute(f'ALTER TABLE processos ADD COLUMN "{column_name}" {column_type} DEFAULT "{default_value}"')
+            else:
+                cursor.execute(f'ALTER TABLE processos ADD COLUMN "{column_name}" {column_type}')
+            conn.commit()
+            logger.info(f'Coluna "{column_name}" ({column_type}) adicionada à tabela "processos".')
+        else:
+            logger.debug(f'Coluna "{column_name}" já existe na tabela "processos".')
+    except Exception as e:
+        logger.error(f"Erro ao adicionar coluna '{column_name}': {e}")
+
+
 def criar_tabela_followup(conn):
     """
     Cria as tabelas 'processos' e 'historico_processos' se não existirem,
@@ -110,7 +129,7 @@ def criar_tabela_followup(conn):
             Destino TEXT,
             INCOTERM TEXT,
             Comprador TEXT,
-            Status_Arquivado TEXT DEFAULT 'Não Arquivado', -- Nova coluna para arquivamento
+            Status_Arquivado TEXT DEFAULT 'Não Arquivado',
             Caminho_da_pasta TEXT
         )''')
         conn.commit()
@@ -124,7 +143,7 @@ def criar_tabela_followup(conn):
             valor_antigo TEXT,
             valor_novo TEXT,
             timestamp TEXT,
-            usuario TEXT, -- Adicionada coluna para registrar o usuário que fez a alteração
+            usuario TEXT,
             FOREIGN KEY(processo_id) REFERENCES processos(id) ON DELETE CASCADE
         )''')
         conn.commit()
@@ -133,28 +152,10 @@ def criar_tabela_followup(conn):
         # Lógica para adicionar novas colunas se a tabela 'processos' já existia sem elas
         cursor.execute("PRAGMA table_info(processos)")
         colunas_existentes = [info[1] for info in cursor.fetchall()]
-        novas_colunas_a_adicionar = {
-            "Processo_Novo": "TEXT", "Observacao": "TEXT", "Tipos_de_item": "TEXT",
-            "Data_Embarque": "TEXT", "Previsao_Pichau": "TEXT", "Documentos_Revisados": "TEXT",
-            "Conhecimento_Embarque": "TEXT", "Descricao_Feita": "TEXT", "Descricao_Enviada": "TEXT",
-            "Fornecedor": "TEXT", "N_Invoice": "TEXT", "Quantidade": "INTEGER",
-            "Valor_USD": "REAL", "Pago": "TEXT", "N_Ordem_Compra": "TEXT",
-            "Data_Compra": "TEXT", "Estimativa_Impostos_BR": "REAL", "Estimativa_Frete_USD": "REAL",
-            "Agente_de_Carga_Novo": "TEXT", "Status_Geral": "TEXT", "Modal": "TEXT",
-            "Navio": "TEXT", "Origem": "TEXT", "Destino": "TEXT",
-            "INCOTERM": "TEXT", "Comprador": "TEXT", "Status_Arquivado": "TEXT DEFAULT 'Não Arquivado'",
-            "Caminho_da_pasta": "TEXT"
-        }
-
-        for col_name, col_type in novas_colunas_a_adicionar.items():
-            if col_name not in colunas_existentes:
-                try:
-                    cursor.execute(f'ALTER TABLE processos ADD COLUMN "{col_name}" {col_type}')
-                    logger.info(f'Coluna "{col_name}" ({col_type}) adicionada à tabela "processos".')
-                except sqlite3.Error as e:
-                    logger.error(f"Erro SQLite ao adicionar coluna '{col_name}': {e}")
-            else:
-                logger.debug(f'Coluna "{col_name}" já existe.')
+        
+        # Adicionar as novas colunas usando a função auxiliar
+        adicionar_coluna_se_nao_existe(conn, 'ETA_Recinto', 'TEXT')
+        adicionar_coluna_se_nao_existe(conn, 'Data_Registro', 'TEXT')
 
         # Lógica para adicionar a coluna 'usuario' à tabela 'historico_processos' se não existir
         cursor.execute("PRAGMA table_info(historico_processos)")
@@ -241,7 +242,7 @@ def importar_csv_para_db(filepath: str):
                 df_to_import[col_name] = pd.to_numeric(df_to_import[col_name], errors='coerce').fillna(0).astype(col_type)
         
         # Converte colunas de data para stringYYYY-MM-DD
-        for col_name in ["Data_Compra", "Data_Embarque", "Previsao_Pichau"]:
+        for col_name in ["Data_Compra", "Data_Embarque", "Previsao_Pichau", "ETA_Recinto", "Data_Registro"]:
             if col_name in df_to_import.columns:
                 df_to_import[col_name] = pd.to_datetime(df_to_import[col_name], errors='coerce').dt.strftime('%Y-%m-%d').fillna(None)
 
@@ -338,6 +339,24 @@ def obter_processos_filtrados(status_filtro="Todos", termos_pesquisa=None):
 
     except Exception as e:
         logger.exception("Erro ao obter processos filtrados do DB")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def obter_todos_processos():
+    """Busca todos os processos do banco de dados."""
+    conn = conectar_followup_db()
+    if conn is None:
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM processos")
+        processos = cursor.fetchall()
+        logger.debug(f"Obtidos {len(processos)} processos do DB.")
+        return processos
+    except Exception as e:
+        logger.exception("Erro ao obter todos os processos do DB")
         return []
     finally:
         if conn:
@@ -570,7 +589,6 @@ def obter_status_gerais_distintos():
         status_do_db = [row[0] for row in cursor.fetchall()]
         logger.debug(f"Obtidos {len(status_do_db)} status gerais distintos do DB.")
         return status_do_db
-
     except Exception as e:
         logger.exception("Erro ao obter status gerais distintos do DB")
         return []
@@ -583,7 +601,6 @@ def obter_nomes_colunas_db():
     conn = conectar_followup_db()
     if conn is None:
         return []
-
     try:
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(processos);")

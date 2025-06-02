@@ -24,7 +24,17 @@ except ImportError:
             _DEFAULT_DB_FOLDER = "data"
             return os.path.join(_app_root_path, _DEFAULT_DB_FOLDER, f"{db_name}.db")
     db_utils = MockDbUtils()
-    logging.warning("Módulo 'db_utils' não encontrado em followup_importacao_page. Usando simulação.")
+    # logging.warning("Módulo 'db_utils' não encontrado em followup_importacao_page. Usando simulação.") # Removed debug/warning message
+except Exception as e:
+    # Catch any other potential import errors for db_utils
+    class MockDbUtils:
+        def get_db_path(self, db_name):
+            _base_path = os.path.dirname(os.path.abspath(__file__))
+            _app_root_path = os.path.dirname(_base_path) if os.path.basename(_base_path) == 'app_logic' else _base_path
+            _DEFAULT_DB_FOLDER = "data"
+            return os.path.join(_app_root_path, _DEFAULT_DB_FOLDER, f"{db_name}.db")
+    db_utils = MockDbUtils()
+    logging.error(f"Erro ao importar 'db_utils' em followup_importacao_page: {e}. Usando simulação.")
 
 
 logger = logging.getLogger(__name__)
@@ -123,7 +133,7 @@ def _import_file_action(uploaded_file):
             st.error("Formato de arquivo não suportado. Por favor, use .csv, .xls ou .xlsx.")
             return False
 
-        logger.info(f"Arquivo local lido com {len(df.columns)} colunas e {len(df)} linhas.")
+        # logger.info(f"Arquivo local lido com {len(df.columns)} colunas e {len(df)} linhas.") # Removed debug message
         
         # Chamar a nova função de pré-processamento do DataFrame
         df_processed = _preprocess_dataframe_for_db(df)
@@ -165,14 +175,14 @@ def _display_edit_process_popup():
     process_id = None # Inicializa process_id para garantir que esteja definido
 
     if not is_new_process:
-        logger.debug(f"Displaying edit popup for process_identifier: {process_identifier} (type: {type(process_identifier)})")
+        # logger.debug(f"Displaying edit popup for process_identifier: {process_identifier} (type: {type(process_identifier)})") # Removed debug message
         # st.write(f"DEBUG: _display_edit_process_popup recebido: ID={process_identifier}, Tipo={type(process_identifier)}") # Debugging
         if isinstance(process_identifier, int): # Se for um ID (da seleção do dataframe)
             raw_data = db_manager.obter_processo_por_id(process_identifier)
-            logger.debug(f"Lookup by ID: {process_identifier}. Raw data found: {raw_data is not None}")
+            # logger.debug(f"Lookup by ID: {process_identifier}. Raw data found: {raw_data is not None}") # Removed debug message
         elif isinstance(process_identifier, str): # Se for um nome de processo (do selectbox ou de outro lugar)
             raw_data = db_manager.obter_processo_by_processo_novo(process_identifier)
-            logger.debug(f"Lookup by Processo_Novo: {process_identifier}. Raw data found: {raw_data is not None}")
+            # logger.debug(f"Lookup by Processo_Novo: {process_identifier}. Raw data found: {raw_data is not None}") # Removed debug message
         else:
             raw_data = None # Caso inesperado
             logger.error(f"Unexpected type for process_identifier: {type(process_identifier)} - {process_identifier}")
@@ -180,7 +190,7 @@ def _display_edit_process_popup():
         if raw_data:
             process_data = dict(raw_data)
             process_id = process_data['id'] # Garante que process_id sempre seja o ID do DB
-            logger.debug(f"Process found for editing. ID: {process_id}, Processo_Novo: {process_data.get('Processo_Novo')}")
+            # logger.debug(f"Process found for editing. ID: {process_id}, Processo_Novo: {process_data.get('Processo_Novo')}") # Removed debug message
         else:
             st.error(f"Processo '{process_identifier}' não encontrado para edição.")
             st.session_state.show_followup_edit_popup = False
@@ -221,6 +231,8 @@ def _display_edit_process_popup():
             "Descricao_Feita": {"label": "Descrição Feita:", "type": "dropdown", "values": ["", "Sim", "Não"]},
             "Descricao_Enviada": {"label": "Descrição Enviada:", "type": "dropdown", "values": ["", "Sim", "Não"]},
             "Caminho_da_pasta": {"label": "Caminho da pasta:", "type": "folder_path"},
+            "ETA_Recinto": {"label": "ETA no Recinto:", "type": "date"}, # Nova coluna
+            "Data_Registro": {"label": "Data de Registro:", "type": "date"}, # Nova coluna
             "Observacao": {"label": "Observação:", "type": "text_area"}, # Campo de observação maior
         }
 
@@ -232,7 +244,8 @@ def _display_edit_process_popup():
         ]
         col2_fields = [
             "Estimativa_Impostos_BR", "Estimativa_Frete_USD", "Data_Embarque",
-            "Agente_de_Carga_Novo", "Status_Geral", "Previsao_Pichau", "Modal"
+            "Agente_de_Carga_Novo", "Status_Geral", "Previsao_Pichau", "Modal",
+            "ETA_Recinto", "Data_Registro" # Adicionadas novas colunas
         ]
         col3_fields = [
             "Origem", "Destino", "INCOTERM", "Comprador",
@@ -503,6 +516,7 @@ def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     # Renomear colunas para corresponder aos nomes do DB (caso a planilha ainda use nomes "amigáveis")
     column_mapping_to_db = {
         "Process Reference": "Processo_Novo",
+        "Supplier": "Fornecedor",
         "Type of Item": "Tipos_de_item",
         "INV/Invoice": "N_Invoice",
         "Qtd": "Quantidade",
@@ -510,24 +524,26 @@ def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         "Paid?": "Pago",
         "P/O": "N_Ordem_Compra",
         "Purchase Date (YYYY-MM-DD)": "Data_Compra",
-        "Est. Imposts": "Est. Imposts",
-        "Freight Est.": "Freight Est.",
-        "Shipping Date (YYYY-MM-DD)": "Shipping Company",
-        "Agente_de_Carga_Novo": "Agente_de_Carga_Novo",
+        "Est. Imposts": "Estimativa_Impostos_BR", # Corrigido aqui
+        "Freight Est.": "Estimativa_Frete_USD", # Corrigido aqui
+        "Shipping Date (YYYY-MM-DD)": "Data_Embarque", # Corrigido aqui
+        "Shipping Company": "Agente_de_Carga_Novo", 
         "Status": "Status_Geral",
-        "Previsao_Pichau": "ETA Pichau (YYYY-MM-DD)",
+        "ETA Pichau (YYYY-MM-DD)": "Previsao_Pichau", # Corrigido aqui
         "Modal": "Modal",
         "Navio": "Navio",
-        "Origin": "Origin",
-        "Destination": "Destination",
+        "Origin": "Origem", # Corrigido aqui
+        "Destination": "Destino", # Corrigido aqui
         "INCOTERM": "INCOTERM",
-        "Buyer": "Comprador",
+        "Buyer": "Comprador", # Corrigido aqui
         "Docs Reviewed (Sim/Não)": "Documentos_Revisados",
         "BL/AWB (Sim/Não)": "Conhecimento_Embarque",
-        "Description Done (Sim/Não)": "Description Done (Sim/Não)",
-        "Description Sent (Sim/Não)": "Description Sent (Sim/Não)",
-        "Folder Path": "Folder Path",
-        "Obs": "Obs",
+        "Description Done (Sim/Não)": "Descricao_Feita", # Corrigido aqui
+        "Description Sent (Sim/Não)": "Descricao_Enviada", # Corrigido aqui
+        "Folder Path": "Caminho_da_pasta", # Corrigido aqui
+        "ETA Recinto (YYYY-MM-DD)": "ETA_Recinto", # Nova coluna
+        "Data Registro (YYYY-MM-DD)": "Data_Registro", # Nova coluna
+        "Obs": "Observacao", # Corrigido aqui
     }
 
     df_processed = df_processed.rename(columns=column_mapping_to_db, errors='ignore')
@@ -538,7 +554,7 @@ def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     # --- Tratamento de Tipos de Dados ---
 
     # 1. Colunas de Data (Formato DD/MM/YYYY na planilha ->YYYY-MM-DD para DB)
-    date_columns_to_process = ["Data_Compra", "Data_Embarque", "Previsao_Pichau"]
+    date_columns_to_process = ["Data_Compra", "Data_Embarque", "Previsao_Pichau", "ETA_Recinto", "Data_Registro"] # Adicionadas novas colunas
     for col in date_columns_to_process:
         if col in df_processed.columns:
             # Converte para datetime, com errors='coerce' para NaT em caso de falha.
@@ -547,7 +563,7 @@ def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
             # Converte para string ympm-MM-DD. NaT se torna None automaticamente aqui.
             # O .fillna(None) é necessário se houver NaT E você quiser None, mas strftime já lida com NaT para None
             df_processed[col] = df_processed[col].dt.strftime('%Y-%m-%d')
-            logger.debug(f"Coluna '{col}' processada para data.")
+            # logger.debug(f"Coluna '{col}' processada para data.") # Removed debug message
 
     # 2. Colunas Numéricas (Garante que são números, preenche NaN com 0)
     numeric_columns = ["Quantidade", "Valor_USD", "Estimativa_Impostos_BR", "Estimativa_Frete_USD"]
@@ -562,7 +578,7 @@ def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
                 df_processed[col] = df_processed[col].astype(int)
             else:
                 df_processed[col] = df_processed[col].astype(float)
-            logger.debug(f"Coluna '{col}' processada para numérico.")
+            # logger.debug(f"Coluna '{col}' processada para numérico.") # Removed debug message
 
     # 3. Colunas de Sim/Não (Padroniza para "Sim" ou "Não" ou None)
     yes_no_columns = [
@@ -575,7 +591,7 @@ def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
             df_processed[col] = df_processed[col].apply(
                 lambda x: "Sim" if x in ["sim", "s"] else ("Não" if x in ["nao", "não", "n"] else None)
             )
-            logger.debug(f"Coluna '{col}' processada para Sim/Não.")
+            # logger.debug(f"Coluna '{col}' processada para Sim/Não.") # Removed debug message
 
     # 4. Outras colunas de texto: Garantir que strings vazias sejam None
     # Esta seção foi revisada para evitar o erro "Must specify a fill 'value' or 'method'."
@@ -601,7 +617,7 @@ def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     # Substitui quaisquer valores NaN remanescentes no DataFrame final por None para SQLite
     final_df_for_db = final_df_for_db.where(pd.notnull(final_df_for_db), None)
 
-    logger.info("DataFrame pré-processado com sucesso para importação no DB.")
+    # logger.info("DataFrame pré-processado com sucesso para importação no DB.") # Removed debug message
     return final_df_for_db
 
 # Pop-up de Filtros e Pesquisa
@@ -651,7 +667,8 @@ def _display_filter_search_popup():
                 st.session_state.show_filter_search_popup = False # Fecha o pop-up
                 st.rerun()
         with col_buttons_popup[1]:
-            if st.form_submit_button("Limpar Filtros"):
+            # Botão Limpar Pesquisa e Filtros
+            if st.form_submit_button("Limpar Pesquisa e Filtros"):
                 st.session_state.followup_status_filter = 'Todos'
                 st.session_state.followup_search_terms = {}
                 st.session_state.popup_followup_search_processo_novo = ""
@@ -672,29 +689,31 @@ def _generate_excel_template():
         "Processo_Novo": "Process Reference",
         "Fornecedor": "Supplier",
         "Tipos_de_item": "Type of Item",
-        "INV/Invoice": "INV/Invoice",
-        "Qtd": "Qtd",
-        "Value USD": "Value USD",
-        "Paid?": "Paid?",
-        "P/O": "N_Ordem_Compra",
+        "N_Invoice": "INV/Invoice",
+        "Quantidade": "Qtd",
+        "Valor_USD": "Value USD",
+        "Pago": "Paid?",
+        "N_Ordem_Compra": "P/O",
         "Data_Compra": "Purchase Date (YYYY-MM-DD)",
         "Est. Imposts": "Est. Imposts",
-        "Freight Est.": "Freight Est.",
-        "Shipping Date (YYYY-MM-DD)": "Shipping Company",
-        "Agente_de_Carga_Novo": "Agente Carga", # Corrigido para Agente Carga
-        "Status_Geral": "Status",
-        "Previsao_Pichau": "ETA Pichau (YYYY-MM-DD)",
+        "Estimativa_Frete_USD": "Freight Est.",
+        "Shipping Date (YYYY-MM-DD)": "Shipping Date (YYYY-MM-DD)",
+        "Shipping Company": "Shipping Company", 
+        "Status": "Status",
+        "ETA Pichau (YYYY-MM-DD)": "ETA Pichau (YYYY-MM-DD)",
         "Modal": "Modal",
         "Navio": "Navio",
         "Origin": "Origin",
         "Destination": "Destination",
         "INCOTERM": "INCOTERM",
-        "Buyer": "Comprador",
-        "Docs Reviewed (Sim/Não)": "Docs Reviewed (Sim/Não)",
+        "Buyer": "Buyer",
+        "Documentos_Revisados": "Docs Reviewed (Sim/Não)",
         "Conhecimento_Embarque": "BL/AWB (Sim/Não)",
         "Description Done (Sim/Não)": "Description Done (Sim/Não)",
         "Description Sent (Sim/Não)": "Description Sent (Sim/Não)",
         "Folder Path": "Folder Path",
+        "ETA Recinto (YYYY-MM-DD)": "ETA Recinto (YYYY-MM-DD)", # Nova coluna
+        "Data Registro (YYYY-MM-DD)": "Data Registro (YYYY-MM-DD)", # Nova coluna
         "Obs": "Obs"
     }
 
@@ -712,6 +731,7 @@ def _generate_excel_template():
         "Purchase Date (YYYY-MM-DD)": "2023-01-15",
         "Est. Imposts": 5000.00,
         "Freight Est.": 1200.00,
+        "Shipping Date (YYYY-MM-DD)": "2023-02-01",
         "Shipping Company": "Agente ABC",
         "Status": "Processo Criado",
         "ETA Pichau (YYYY-MM-DD)": "2023-03-10",
@@ -726,6 +746,8 @@ def _generate_excel_template():
         "Description Done (Sim/Não)": "Não",
         "Description Sent (Sim/Não)": "Não",
         "Folder Path": "C:\\Exemplo\\Pasta\\Processo_EXEMPLO-001",
+        "ETA Recinto (YYYY-MM-DD)": "2023-03-05", # Exemplo para nova coluna
+        "Data Registro (YYYY-MM-DD)": "2023-03-08", # Exemplo para nova coluna
         "Obs": "Observação de exemplo para o processo."
     }
     # A forma mais limpa é criar o DataFrame já com os dados e as colunas
@@ -753,7 +775,7 @@ def _get_gspread_client():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
         
         client = gspread.authorize(creds)
-        logger.info("Cliente gspread autenticado com sucesso.")
+        # logger.info("Cliente gspread autenticado com sucesso.") # Removed debug message
         return client
     except Exception as e:
         logger.error(f"Erro ao autenticar gspread: {e}")
@@ -776,24 +798,58 @@ def _import_from_google_sheets(sheet_url_or_id, worksheet_name):
         db_columns_order = db_manager.obter_nomes_colunas_db()
         db_columns_order = [col for col in db_columns_order if col != 'id']
 
-        expected_headers = db_columns_order 
-        logger.info(f"Cabeçalhos esperados para importação do Google Sheets: {expected_headers}")
+        expected_headers_map = {
+            "Process Reference": "Processo_Novo",
+            "Supplier": "Fornecedor",
+            "Type of Item": "Tipos_de_item",
+            "INV/Invoice": "N_Invoice",
+            "Qtd": "Quantidade",
+            "Value USD": "Valor_USD",
+            "Paid?": "Pago",
+            "P/O": "N_Ordem_Compra",
+            "Purchase Date (YYYY-MM-DD)": "Data_Compra",
+            "Est. Imposts": "Estimativa_Impostos_BR",
+            "Freight Est.": "Estimativa_Frete_USD",
+            "Shipping Date (YYYY-MM-DD)": "Data_Embarque",
+            "Shipping Company": "Agente_de_Carga_Novo", 
+            "Status": "Status_Geral",
+            "ETA Pichau (YYYY-MM-DD)": "Previsao_Pichau",
+            "Modal": "Modal",
+            "Navio": "Navio",
+            "Origin": "Origem",
+            "Destination": "Destino",
+            "INCOTERM": "INCOTERM",
+            "Buyer": "Comprador",
+            "Docs Reviewed (Sim/Não)": "Documentos_Revisados",
+            "BL/AWB (Sim/Não)": "Conhecimento_Embarque",
+            "Description Done (Sim/Não)": "Descricao_Feita",
+            "Description Sent (Sim/Não)": "Descricao_Enviada",
+            "Folder Path": "Caminho_da_pasta",
+            "ETA Recinto (YYYY-MM-DD)": "ETA_Recinto", # Nova coluna
+            "Data Registro (YYYY-MM-DD)": "Data_Registro", # Nova coluna
+            "Obs": "Observacao"
+        }
+        # A API get_all_records espera os nomes das colunas *exatamente como estão na planilha*.
+        # Então, precisamos de um mapeamento reverso ou usar os nomes amigáveis para a leitura inicial.
+        # Vamos usar a lista de cabeçalhos que esperamos encontrar na planilha, que são as chaves do map.
+        gsheets_headers = list(expected_headers_map.keys())
 
-        try:
-            data = worksheet.get_all_records(expected_headers=expected_headers)
-        except Exception as e:
-            st.error(f"Erro ao ler os registros do Google Sheets. Verifique se os cabeçalhos da planilha correspondem exatamente aos esperados ou se não há duplicatas/vazios: {e}")
-            logger.exception("Erro ao chamar get_all_records com expected_headers.")
-            return False
+        # logger.info(f"Tentando ler do Google Sheets com os cabeçalhos: {gsheets_headers}") # Removed debug message
 
+        data = worksheet.get_all_records(value_render_option='UNFORMATTED_VALUE', head=1) # Lê a primeira linha como cabeçalho
+        
         if not data:
-            st.warning(f"A aba '{worksheet_name}' na planilha '{sheet_url_or_id}' está vazia ou não contém dados válidos após a leitura com os cabeçalhos esperados.")
+            st.warning(f"A aba '{worksheet_name}' na planilha '{sheet_url_or_id}' está vazia.")
             return False
+
+        # Verifica se os cabeçalhos da planilha correspondem aos esperados (com alguma flexibilidade)
+        actual_headers = worksheet.row_values(1) # Obtém os valores da primeira linha como cabeçalhos reais
 
         df_from_gsheets = pd.DataFrame(data)
-        logger.info(f"Dados lidos do Google Sheets: {len(df_from_gsheets)} linhas, {len(df_from_gsheets.columns)} colunas.")
-        logger.debug(f"Colunas do DataFrame importado: {df_from_gsheets.columns.tolist()}")
+        # logger.info(f"Dados lidos do Google Sheets: {len(df_from_gsheets)} linhas, {len(df_from_gsheets.columns)} colunas.") # Removed debug message
+        # logger.debug(f"Colunas do DataFrame importado: {df_from_gsheets.columns.tolist()}") # Removed debug message
 
+        # Pré-processa o DataFrame, o que inclui renomear as colunas
         df_processed = _preprocess_dataframe_for_db(df_from_gsheets)
 
         if df_processed is None:
@@ -920,7 +976,8 @@ def _display_filter_search_popup():
                 st.session_state.show_filter_search_popup = False # Fecha o pop-up
                 st.rerun()
         with col_buttons_popup[1]:
-            if st.form_submit_button("Limpar Filtros"):
+            # Botão Limpar Pesquisa e Filtros
+            if st.form_submit_button("Limpar Pesquisa e Filtros"):
                 st.session_state.followup_status_filter = 'Todos'
                 st.session_state.followup_search_terms = {}
                 st.session_state.popup_followup_search_processo_novo = ""
@@ -962,24 +1019,19 @@ def _display_delete_confirm_popup():
                 st.session_state.delete_process_name_to_confirm = None
                 st.rerun()
 
+# Função para expandir todos os expanders
+def _expand_all_expanders():
+    st.session_state.followup_expand_all_expanders = True
+
+# Função para recolher todos os expanders
+def _collapse_all_expanders():
+    st.session_state.followup_expand_all_expanders = False
+
 # UI Principal
 def show_page():
     st.subheader("Follow-up Importação")
 
-    # Mover o aviso de conexão do banco para o final da página
-    # conn_check = db_manager.conectar_followup_db()
-    # if conn_check:
-    #     try:
-    #         db_manager.criar_tabela_followup(conn_check)
-    #         st.success(f"Banco de dados de Follow-up ({os.path.basename(db_manager.get_followup_db_path())}) conectado e tabelas verificadas.")
-    #     except Exception as e:
-    #         st.error(f"Erro ao criar/verificar tabelas do DB de Follow-up: {e}")
-    #     finally:
-    #         conn_check.close()
-    # else:
-    #     st.error(f"Não foi possível conectar ao banco de dados de Follow-up em: {db_manager.get_db_path()}")
-
-
+    # Initialize session states
     if 'followup_processes_data' not in st.session_state:
         st.session_state.followup_processes_data = []
     if 'followup_selected_process_id' not in st.session_state:
@@ -996,82 +1048,107 @@ def show_page():
         st.session_state.followup_editing_process_id = None
     if 'show_filter_search_popup' not in st.session_state:
         st.session_state.show_filter_search_popup = False
-    if 'followup_edit_process_input_value' not in st.session_state:
-        st.session_state.followup_edit_process_input_value = ""
     if 'gsheets_url_id' not in st.session_state:
         st.session_state.gsheets_url_id = ""
     if 'gsheets_worksheet_name' not in st.session_state:
         st.session_state.gsheets_worksheet_name = "Sheet1"
-    # NOVO: Variáveis de estado para o pop-up de confirmação de exclusão
     if 'show_delete_confirm_popup' not in st.session_state:
         st.session_state.show_delete_confirm_popup = False
     if 'delete_process_id_to_confirm' not in st.session_state:
         st.session_state.delete_process_id_to_confirm = None
     if 'delete_process_name_to_confirm' not in st.session_state:
         st.session_state.delete_process_name_to_confirm = None
-    
     if 'show_import_popup' not in st.session_state:
         st.session_state.show_import_popup = False
+    if 'followup_expand_all_expanders' not in st.session_state:
+        st.session_state.followup_expand_all_expanders = False
 
 
+    # Call popups first (they handle their own reruns)
     _display_edit_process_popup()
     _display_filter_search_popup()
     _display_import_popup()
-    _display_delete_confirm_popup() # NOVO: Chamar o pop-up de confirmação de exclusão
+    _display_delete_confirm_popup()
 
+    # If any popup is active, stop rendering the main page to avoid conflicts
     if st.session_state.get('show_followup_edit_popup', False) or \
        st.session_state.get('show_filter_search_popup', False) or \
        st.session_state.get('show_import_popup', False) or \
-       st.session_state.get('show_delete_confirm_popup', False): # NOVO: Incluir o pop-up de exclusão
+       st.session_state.get('show_delete_confirm_popup', False):
         return
 
-    st.markdown("---")
-    # Ajustar o layout dos botões na parte superior
-    # Colunas para alinhar Adicionar, Filtros, Selectbox e Botão Abrir Edição
-    col_add, col_filter_search, col_edit_manual_select, col_edit_manual_btn = st.columns([0.15, 0.2, 0.35, 0.3])
+    # Load processes initially and whenever filters/search terms change
+    _load_processes() 
 
-    with col_add:
+    st.markdown("---")
+    
+    # Row 1: Adicionar Novo Processo, Filtros e Pesquisa, Expandir Todos, Recolher Todos
+    # Adjusted column widths to fit all 4 buttons on one line
+    col1_add, col1_filter, col1_expand, col1_collapse = st.columns([0.2, 0.2, 0.2, 0.4]) 
+    with col1_add:
         if st.button("Adicionar Novo Processo", key="add_new_process_button"):
             _open_edit_process_popup(None)
-    
-    with col_filter_search:
+    with col1_filter:
         if st.button("Filtros e Pesquisa", key="open_filter_search_popup_button"):
             _open_filter_search_popup()
+    with col1_expand:
+        if st.button("Expandir Todos", key="expand_all_button"):
+            _expand_all_expanders()
+    with col1_collapse:
+        if st.button("Recolher Todos", key="collapse_all_button"):
+            _collapse_all_expanders()
 
-    with col_edit_manual_select:
-        # Criar um dicionário {nome_processo: id_processo} para o selectbox
+    # Row 2: Pesquisar e Abrir para Editar (selectbox), Limpar Pesquisa, Abrir Edição
+    # Adjusted column widths for a more compact layout
+    col2_search_select, col2_clear_search = st.columns([0.5, 0.2]) 
+    with col2_search_select:
+        # Create a dictionary {nome_processo: id_processo} for the selectbox
         process_name_to_id_map = {p['Processo_Novo']: p['id'] for p in st.session_state.followup_processes_data if p.get('Processo_Novo')}
         sorted_process_names = [""] + sorted(process_name_to_id_map.keys())
 
-        edited_process_name_selected = st.selectbox(
-            "Processo p/ Editar:", 
-            options=sorted_process_names,
-            key="followup_edit_process_name_selectbox",
-            label_visibility="visible" 
-        )
-        st.session_state.followup_edit_process_input_value = edited_process_name_selected
+        # Determine the default index for the selectbox based on the current search term
+        current_search_term_for_selectbox = st.session_state.get('followup_search_terms', {}).get('Processo_Novo', '')
+        try:
+            default_selectbox_index = sorted_process_names.index(current_search_term_for_selectbox)
+        except ValueError:
+            default_selectbox_index = 0 # Default to the empty string if not found
 
-    with col_edit_manual_btn:
-        # Para alinhar o botão "Abrir Edição" com o selectbox, que tem um label acima.
-        # Ajustado para usar st.write() com HTML para um controle mais preciso do alinhamento.
-        st.markdown("<div style='height: 28px; visibility: hidden;'>.</div>", unsafe_allow_html=True) # Espaçamento invisível para alinhamento
-        if st.button("Abrir Edição", key="edit_process_button_action"):
-            if st.session_state.followup_edit_process_input_value:
-                # Obter o ID do processo a partir do nome selecionado
-                selected_process_identifier = process_name_to_id_map.get(st.session_state.followup_edit_process_input_value)
-                
-                if selected_process_identifier:
-                    # st.write(f"DEBUG: Abrir Edição manual - ID passado: {selected_process_identifier}, Tipo: {type(selected_process_identifier)}") # Debugging
+        edited_process_name_selected = st.selectbox(
+            "Pesquisar e Abrir para Editar:", 
+            options=sorted_process_names,
+            index=default_selectbox_index, # Use the dynamically determined index
+            key="followup_edit_process_name_search_input",
+            label_visibility="visible"
+        )
+        
+        # Update the search term in session state if the selectbox value changes
+        # This will trigger a rerun and _load_processes will apply the filter
+        if edited_process_name_selected != current_search_term_for_selectbox:
+            st.session_state.followup_search_terms['Processo_Novo'] = edited_process_name_selected
+            st.rerun() # Trigger rerun to apply filter and update table
+
+        # The "Abrir Edição" button for the selected process
+        if edited_process_name_selected:
+            selected_process_identifier = process_name_to_id_map.get(edited_process_name_selected)
+            if selected_process_identifier:
+                if st.button(f"Abrir Edição de '{edited_process_name_selected}'", key="edit_process_from_search_button"):
                     _open_edit_process_popup(selected_process_identifier)
-                else:
-                    st.warning("Por favor, selecione um Processo válido para editar.")
             else:
-                st.warning("Por favor, selecione um Processo para editar.")
+                # Removed "Digite ou selecione um processo para editar."
+                pass 
+
+    with col2_clear_search:
+        st.markdown("<div style='height: 28px; visibility: hidden;'>.</div>", unsafe_allow_html=True) # Espaçamento invisível para alinhamento
+        if st.button("Limpar Pesquisa", key="clear_process_search_button"):
+            st.session_state.followup_search_terms['Processo_Novo'] = "" # Clear the search term
+            st.rerun()
+
 
     st.markdown("---")
     st.markdown("#### Processos de Importação")
 
-    _load_processes()
+    # The _load_processes() at the beginning of show_page() now handles the filtering
+    # No need for a second call here.
 
     if st.session_state.followup_processes_data:
         df_all_processes = pd.DataFrame(st.session_state.followup_processes_data)
@@ -1086,10 +1163,10 @@ def show_page():
 
         # Definir a ordem personalizada dos status
         custom_status_order = [
-            'Encerrado', 'Arquivados', 'Chegada Pichau', 'Agendado', 'Liberado', 'Registrado',
+            'Encerrado', 'Agendado', 'Liberado', 'Registrado',
             'Chegada Recinto', 'Embarcado', 'Pré Embarque', 'Verificando',
-            'Em produção', 'Processo Criado',
-            'Sem Status', 'Status Desconhecido' # Incluir fallbacks se existirem
+            'Em produção', 'Processo Criado', 'Chegada Pichau',
+            'Sem Status', 'Status Desconhecido', 'Arquivados' # Arquivados por último
         ]
 
         # Garantir que todos os status únicos no DF estejam na lista de ordem, adicionando-os no final se faltarem
@@ -1106,7 +1183,8 @@ def show_page():
 
         df_all_processes = df_all_processes.sort_values(by=['Status_Geral', 'Modal'])
 
-        grouped_by_status = df_all_processes.groupby('Status_Geral', observed=False) # observed=False para incluir categorias vazias
+        # Usar `observed=False` para manter todas as categorias de status, mesmo que vazias no DF atual
+        grouped_by_status = df_all_processes.groupby('Status_Geral', observed=False) 
 
         # --- Colunas a serem exibidas no st.dataframe ---
         display_columns_for_dataframe = [
@@ -1116,6 +1194,7 @@ def show_page():
             "Quantidade", "Valor_USD", "Pago", "N_Ordem_Compra", "Data_Compra",
             "Estimativa_Impostos_BR", "Estimativa_Frete_USD", "Agente_de_Carga_Novo",
             "Caminho_da_pasta", "Origem", "Destino", "INCOTERM", "Comprador", "Navio",
+            "ETA_Recinto", "Data_Registro", # Novas colunas
             "id" # Movido para o final
         ]
         # Filtrar apenas as colunas que realmente existem no DataFrame
@@ -1149,6 +1228,8 @@ def show_page():
             "INCOTERM": st.column_config.TextColumn("INCOTERM", width="small"),
             "Comprador": st.column_config.TextColumn("Comprador", width="small"),
             "Navio": st.column_config.TextColumn("Navio", width="small"),
+            "ETA_Recinto": st.column_config.TextColumn("ETA Recinto", width="small"), # Configuração para nova coluna
+            "Data_Registro": st.column_config.TextColumn("Data Registro", width="small"), # Configuração para nova coluna
             "Status_Geral": st.column_config.Column(disabled=True, width="tiny"),
             "Modal": st.column_config.Column(disabled=True, width="tiny"),
             "Status_Arquivado": st.column_config.Column(disabled=True, width="tiny"),
@@ -1174,7 +1255,9 @@ def show_page():
             'Status Desconhecido': '#B0B0B0',
         }
 
-        for status, status_group_df in grouped_by_status:
+        for status in custom_status_order:
+            status_group_df = df_all_processes[df_all_processes['Status_Geral'] == status]
+            
             if status_group_df.empty:
                 continue
 
@@ -1185,7 +1268,7 @@ def show_page():
             st.markdown(f"<h4 style='background-color:{bg_color}; color:{text_color}; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>Status: {status} ({len(status_group_df)} processos)</h4>", unsafe_allow_html=True)
 
             # O expander em si não terá a cor de fundo, apenas o conteúdo dentro dele
-            with st.expander(f"Detalhes do Status {status}", expanded=False): # Revertido para expanded=False
+            with st.expander(f"Detalhes do Status {status}", expanded=st.session_state.followup_expand_all_expanders): 
                 # O conteúdo dentro do expander pode ter sua própria cor de texto se necessário
                 # st.markdown(f"<div style='color:{text_color};'>", unsafe_allow_html=True) # Removido, pois o Streamlit já lida com o tema
 
@@ -1197,7 +1280,7 @@ def show_page():
                     
                     df_modal_display = modal_group_df.copy()
                     
-                    for col_name in ["Data_Compra", "Data_Embarque", "Previsao_Pichau"]:
+                    for col_name in ["Data_Compra", "Data_Embarque", "Previsao_Pichau", "ETA_Recinto", "Data_Registro"]: # Adicionadas novas colunas
                         if col_name in df_modal_display.columns:
                             df_modal_display[col_name] = df_modal_display[col_name].apply(_format_date_display)
                     for col_name in ["Valor_USD", "Estimativa_Frete_USD"]:
@@ -1235,7 +1318,7 @@ def show_page():
                             selected_process_id = selected_original_process['id']
                             selected_process_name = selected_original_process['Processo_Novo'] # Usar nome dos dados originais
 
-                            # st.write(f"DEBUG: Processo selecionado na tabela - ID: {selected_process_id}, Nome: {selected_process_name}") # Debug removido
+                            # st.write(f"DEBUG: Processo selecionado na tabela - ID: {selected_process_id}, Nome: {selected_process_name}") # Debug removed
                             
                             col_edit_btn, col_delete_btn = st.columns(2)
                             with col_edit_btn:
@@ -1272,10 +1355,11 @@ def show_page():
     if conn_check:
         try:
             db_manager.criar_tabela_followup(conn_check)
-            st.success(f"Banco de dados de Follow-up ({os.path.basename(db_manager.get_followup_db_path())}) conectado e tabelas verificadas.")
+            # st.success(f"Banco de dados de Follow-up ({os.path.basename(db_manager.get_followup_db_path())}) conectado e tabelas verificadas.") # Removed debug message
         except Exception as e:
             st.error(f"Erro ao criar/verificar tabelas do DB de Follow-up: {e}")
         finally:
             conn_check.close()
     else:
         st.error(f"Não foi possível conectar ao banco de dados de Follow-up em: {db_manager.get_db_path()}")
+

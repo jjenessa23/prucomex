@@ -915,4 +915,3 @@ def deletar_produto(db_path: str, id_key_erp: str):
         return False
     finally:
         if conn: conn.close()
-

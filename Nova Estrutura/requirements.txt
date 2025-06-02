@@ -1,0 +1,5 @@
+openpyxl
+reportlab
+xlsxwriter
+gspread
+oauth2client
