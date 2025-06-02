@@ -3,3 +3,6 @@ reportlab
 xlsxwriter
 gspread
 oauth2client
+pandas 
+altair 
+numpy 
