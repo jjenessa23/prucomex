@@ -5,6 +5,12 @@ import os
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
+import json # Importar json para lidar com target_users
+
+# Importar db_utils para obter a lista de usuários
+# Assumindo que db_utils está no mesmo nível que followup_db_manager
+import db_utils
+
 
 # Configuração de logging para o módulo de banco de dados
 logger = logging.getLogger(__name__)
@@ -171,10 +177,32 @@ def criar_tabela_followup(conn):
         else:
              logger.debug('Coluna "usuario" já existe na historico_processos.')
 
+        # --- Novas tabelas para Notificações ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT NOT NULL,
+            target_users TEXT, -- Agora armazena um único username ou "ALL"
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active' -- 'active', 'deleted'
+        )''')
         conn.commit()
+        logger.info("Tabela 'notifications' verificada/criada com sucesso.")
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS notification_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notification_id INTEGER,
+            action TEXT NOT NULL, -- 'deleted', 'restored'
+            action_by TEXT NOT NULL,
+            action_at TEXT NOT NULL,
+            original_message TEXT,
+            FOREIGN KEY(notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+        )''')
+        conn.commit()
+        logger.info("Tabela 'notification_history' verificada/criada com sucesso.")
 
     except Exception as e:
-        logger.exception("Erro ao criar ou atualizar as tabelas do Follow-up")
+        logger.exception("Erro ao criar ou atualizar as tabelas do Follow-up e Notificações")
         conn.rollback() # Reverte as alterações em caso de erro
 
 
@@ -199,7 +227,7 @@ def importar_csv_para_db(filepath: str):
             except Exception:
                 try:
                     # Tenta ler CSV com codificação latin-1
-                    df = pd.read_csv(filepath, encoding='latin-1')
+                    df = pd.read_csv(filepath, sep=';')
                 except Exception:
                     # Última tentativa com ponto e vírgula como separador
                     df = pd.read_csv(filepath, sep=';')
@@ -253,38 +281,6 @@ def importar_csv_para_db(filepath: str):
         # Inserir dados do DataFrame no banco de dados
         df_to_import.to_sql('processos', conn, if_exists='append', index=False)
 
-        conn.commit()
-        logger.info(f"Dados do arquivo '{os.path.basename(filepath)}' importados com sucesso para o DB. ({len(df_to_import)} linhas importadas)")
-        return True
-
-    except FileNotFoundError:
-        logger.error(f"Arquivo não encontrado para importação: {filepath}")
-        return False
-    except Exception as e:
-        logger.exception("Erro durante a importação do arquivo para o DB")
-        conn.rollback() # Reverte as alterações em caso de erro
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-# NOVO: Função para importar um DataFrame já pré-processado para o DB
-def importar_csv_para_db_from_dataframe(df_to_import: pd.DataFrame):
-    """
-    Importa um DataFrame já pré-processado para o banco de dados 'processos'.
-    Esta função apaga os dados existentes antes de importar.
-    """
-    conn = conectar_followup_db()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM processos")
-        cursor.execute("DELETE FROM historico_processos")
-        logger.warning("Dados existentes nas tabelas 'processos' e 'historico_processos' foram apagados para importação via DataFrame.")
-        
-        # Inserir dados do DataFrame no banco de dados
-        df_to_import.to_sql('processos', conn, if_exists='append', index=False)
         conn.commit()
         logger.info(f"Dados do DataFrame importados com sucesso para o DB. ({len(df_to_import)} linhas importadas)")
         return True
@@ -413,9 +409,8 @@ def inserir_processo(dados: tuple):
             logger.error(f"Número de dados ({len(dados)}) não corresponde ao número de colunas no DB ({len(colunas)}).")
             return False
 
-        column_names_quoted = ', '.join([f'"{c}"' for c in colunas])
-        placeholders = ', '.join(['?'] * len(colunas))
-        query = "INSERT INTO processos ({}) VALUES ({})".format(column_names_quoted, placeholders)
+        set_clause = ', '.join([f'"{c}" = ?' for c in colunas])
+        query = "INSERT INTO processos ({}) VALUES ({})".format(set_clause, ', '.join(['?'] * len(colunas)))
 
         cursor.execute(query, dados)
         conn.commit()
@@ -582,7 +577,6 @@ def obter_status_gerais_distintos():
     conn = conectar_followup_db()
     if conn is None:
         return []
-
     try:
         cursor = conn.cursor()
         cursor.execute('SELECT DISTINCT "Status_Geral" FROM processos WHERE "Status_Geral" IS NOT NULL AND "Status_Geral" != "" ORDER BY "Status_Geral"')
@@ -614,3 +608,195 @@ def obter_nomes_colunas_db():
     finally:
         if conn:
             conn.close()
+
+# --- Funções de gerenciamento de Notificações ---
+
+def add_notification(message: str, target_user: str, created_by: str, status: str = 'active'):
+    """Adiciona uma nova notificação ao banco de dados para um único usuário ou 'ALL'."""
+    conn = conectar_followup_db()
+    if conn is None:
+        return False
+    try:
+        cursor = conn.cursor()
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # target_user já é uma string (username ou "ALL")
+        cursor.execute('''INSERT INTO notifications (message, target_users, created_at, created_by, status)
+                          VALUES (?, ?, ?, ?, ?)''',
+                       (message, target_user, created_at, created_by, status))
+        conn.commit()
+        logger.info(f"Notificação adicionada por {created_by} para {target_user}.")
+        return True
+    except Exception as e:
+        logger.exception("Erro ao adicionar notificação.")
+        conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def get_active_notifications(username: Optional[str] = None):
+    """
+    Busca notificações ativas. Se username for fornecido, busca notificações para esse usuário
+    ou notificações destinadas a 'ALL'.
+    """
+    conn = conectar_followup_db()
+    if conn is None:
+        return []
+    try:
+        cursor = conn.cursor()
+        # Buscar todas as notificações ativas
+        query = "SELECT * FROM notifications WHERE status = 'active' ORDER BY created_at DESC"
+        cursor.execute(query)
+        all_active_notifications = cursor.fetchall()
+
+        filtered_notifications = []
+        for notif in all_active_notifications:
+            target_user_str = notif['target_users'] # target_users é uma string simples (username ou "ALL")
+            
+            # Lógica de filtragem aprimorada
+            if username is None: # Admin view: mostra todas as ativas
+                filtered_notifications.append(dict(notif))
+            elif target_user_str == "ALL": # Notificação para todos
+                filtered_notifications.append(dict(notif))
+            elif target_user_str == username: # Notificação para o usuário específico
+                filtered_notifications.append(dict(notif))
+        
+        return filtered_notifications
+    except Exception as e:
+        logger.exception("Erro ao obter notificações ativas.")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def mark_notification_as_deleted(notification_id: int, deleted_by: str):
+    """Marca uma notificação como excluída e registra no histórico."""
+    conn = conectar_followup_db()
+    if conn is None:
+        return False
+    try:
+        cursor = conn.cursor()
+        
+        # Obter a mensagem original da notificação antes de marcar como excluída
+        cursor.execute("SELECT message FROM notifications WHERE id = ?", (notification_id,))
+        original_message = cursor.fetchone()
+        if original_message:
+            original_message_text = original_message['message']
+        else:
+            original_message_text = "Mensagem original não encontrada."
+
+        cursor.execute("UPDATE notifications SET status = 'deleted' WHERE id = ?", (notification_id,))
+        
+        action_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''INSERT INTO notification_history (notification_id, action, action_by, action_at, original_message)
+                          VALUES (?, ?, ?, ?, ?)''',
+                       (notification_id, 'deleted', deleted_by, action_at, original_message_text))
+        conn.commit()
+        logger.info(f"Notificação ID {notification_id} marcada como excluída por {deleted_by}.")
+        return True
+    except Exception as e:
+        logger.exception(f"Erro ao marcar notificação ID {notification_id} como excluída.")
+        conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def get_deleted_notifications():
+    """Busca notificações excluídas do histórico."""
+    conn = conectar_followup_db()
+    if conn is None:
+        return []
+    try:
+        cursor = conn.cursor()
+        # Corrigido: Buscar a coluna 'original_message' diretamente do histórico
+        # Adicionado o 'nh.id as history_entry_id' para ter uma chave única para os botões no Streamlit
+        query = "SELECT nh.id as history_entry_id, nh.notification_id as original_notification_id, nh.original_message, nh.action_at, nh.action_by FROM notification_history nh WHERE nh.action = 'deleted' ORDER BY nh.action_at DESC"
+        cursor.execute(query)
+        notifications = cursor.fetchall()
+        return [dict(n) for n in notifications]
+    except Exception as e:
+        logger.exception("Erro ao obter notificações excluídas.")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def restore_notification(notification_id: int, restored_by: str):
+    """Restaura uma notificação excluída (status para 'active') e registra no histórico."""
+    conn = conectar_followup_db()
+    if conn is None:
+        return False
+    try:
+        cursor = conn.cursor()
+        
+        # Obter a mensagem original da notificação antes de restaurar
+        cursor.execute("SELECT message FROM notifications WHERE id = ?", (notification_id,))
+        original_message = cursor.fetchone()
+        if original_message:
+            original_message_text = original_message['message']
+        else:
+            original_message_text = "Mensagem original não encontrada."
+
+        cursor.execute("UPDATE notifications SET status = 'active' WHERE id = ?", (notification_id,))
+        
+        action_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''INSERT INTO notification_history (notification_id, action, action_by, action_at, original_message)
+                          VALUES (?, ?, ?, ?, ?)''',
+                       (notification_id, 'restored', restored_by, action_at, original_message_text))
+        conn.commit()
+        logger.info(f"Notificação ID {notification_id} restaurada por {restored_by}.")
+        return True
+    except Exception as e:
+        logger.exception(f"Erro ao restaurar notificação ID {notification_id}.")
+        conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def delete_history_entry_permanently(history_entry_id: int, deleted_by: str):
+    """
+    Exclui permanentemente uma entrada do histórico de notificações.
+    """
+    conn = conectar_followup_db()
+    if conn is None:
+        return False
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM notification_history WHERE id = ?", (history_entry_id,))
+        conn.commit()
+        logger.info(f"Entrada do histórico ID {history_entry_id} excluída permanentemente por {deleted_by}.")
+        return True
+    except Exception as e:
+        logger.exception(f"Erro ao excluir permanentemente a entrada do histórico ID {history_entry_id}.")
+        conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def get_all_users_from_db():
+    """
+    Obtém todos os usuários do banco de dados principal através de db_utils.
+    """
+    try:
+        # Chama a função get_all_users do módulo db_utils
+        users = db_utils.get_all_users()
+        logger.info(f"Obtidos {len(users)} usuários via db_utils.get_all_users().")
+        return users
+    except AttributeError:
+        logger.error("db_utils.get_all_users() não encontrada. Verifique o módulo db_utils.")
+        # Fallback para usuários simulados se a função não existir em db_utils
+        return [
+            {'id': 1, 'username': 'admin'},
+            {'id': 2, 'username': 'usuario1'},
+            {'id': 3, 'username': 'usuario2'}
+        ]
+    except Exception as e:
+        logger.exception("Erro inesperado ao obter usuários via db_utils.")
+        return [
+            {'id': 1, 'username': 'admin'},
+            {'id': 2, 'username': 'usuario1'},
+            {'id': 3, 'username': 'usuario2'}
+        ]

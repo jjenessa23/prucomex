@@ -11,6 +11,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from typing import Optional
 import numpy as np
+import base64 # Importar base64 para codificar imagens
 
 import followup_db_manager as db_manager
 
@@ -38,6 +39,41 @@ except Exception as e:
 
 
 logger = logging.getLogger(__name__)
+
+# --- Função para definir imagem de fundo com opacidade (copiada de app_main.py) ---
+def set_background_image(image_path):
+    try:
+        with open(image_path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        st.markdown(
+            f"""
+            <style>
+            .stApp {{
+                background-color: transparent !important; /* Garante que o fundo do app seja transparente */
+            }}
+            .stApp::before {{
+                content: "";
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-image: url("data:image/png;base64,{encoded_string}");
+                background-size: cover;
+                background-position: center;
+                background-repeat: no-repeat;
+                background-attachment: fixed;
+                opacity: 0.20; /* Opacidade ajustada para 20% */
+                z-index: -1; /* Garante que o pseudo-elemento fique atrás do conteúdo */
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+    except FileNotFoundError:
+        st.warning(f"A imagem de fundo não foi encontrada no caminho: {image_path}")
+    except Exception as e:
+        st.error(f"Erro ao carregar a imagem de fundo: {e}")
 
 def _format_date_display(date_str):
     """Formata uma string de data (YYYY-MM-DD) para exibição (DD/MM/YYYY)."""
@@ -409,6 +445,11 @@ def _save_process_action(process_id, edited_data, is_new_process):
             else:
                 logger.warning(f"Processo ID {process_id} não encontrado ao tentar obter Status_Arquivado original para salvar.")
                 data_to_save_dict['Status_Arquivado'] = 'Não Arquivado' # Fallback
+    
+    # Adicionar o usuário que fez a alteração
+    user_info = st.session_state.get('user_info', {'username': 'Desconhecido'})
+    data_to_save_dict['Ultima_Alteracao_Por'] = user_info.get('username')
+    data_to_save_dict['Ultima_Alteracao_Em'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Converte o dicionário para uma tupla na ordem exata das colunas do DB (excluindo 'id')
     final_data_tuple = tuple(data_to_save_dict[col] for col in db_col_names_full if col != 'id')
@@ -416,7 +457,6 @@ def _save_process_action(process_id, edited_data, is_new_process):
     changes = []
     if not is_new_process:
         original_process_data_dict = dict(db_manager.obter_processo_por_id(process_id))
-        user_info = st.session_state.get('user_info', {'username': 'Desconhecido'})
         username = user_info.get('username')
 
         # Compara todos as colunas que estão no DB (exceto 'id')
@@ -708,7 +748,7 @@ def _generate_excel_template():
         "INCOTERM": "INCOTERM",
         "Buyer": "Buyer",
         "Documentos_Revisados": "Docs Reviewed (Sim/Não)",
-        "Conhecimento_Embarque": "BL/AWB (Sim/Não)",
+        "BL/AWB (Sim/Não)": "BL/AWB (Sim/Não)",
         "Description Done (Sim/Não)": "Description Done (Sim/Não)",
         "Description Sent (Sim/Não)": "Description Sent (Sim/Não)",
         "Folder Path": "Folder Path",
@@ -824,10 +864,10 @@ def _import_from_google_sheets(sheet_url_or_id, worksheet_name):
             "BL/AWB (Sim/Não)": "Conhecimento_Embarque",
             "Description Done (Sim/Não)": "Descricao_Feita",
             "Description Sent (Sim/Não)": "Descricao_Enviada",
-            "Folder Path": "Caminho_da_pasta",
+            "Folder Path": "Folder Path",
             "ETA Recinto (YYYY-MM-DD)": "ETA_Recinto", # Nova coluna
             "Data Registro (YYYY-MM-DD)": "Data_Registro", # Nova coluna
-            "Obs": "Observacao"
+            "Obs": "Obs"
         }
         # A API get_all_records espera os nomes das colunas *exatamente como estão na planilha*.
         # Então, precisamos de um mapeamento reverso ou usar os nomes amigáveis para a leitura inicial.
@@ -1029,6 +1069,12 @@ def _collapse_all_expanders():
 
 # UI Principal
 def show_page():
+    # --- Configuração da Imagem de Fundo para a página Follow-up ---
+    # Certifique-se de que o caminho para a imagem esteja correto
+    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
+    set_background_image(background_image_path)
+    # --- Fim da Configuração da Imagem de Fundo ---
+
     st.subheader("Follow-up Importação")
 
     # Initialize session states
@@ -1317,8 +1363,6 @@ def show_page():
                         if selected_original_process:
                             selected_process_id = selected_original_process['id']
                             selected_process_name = selected_original_process['Processo_Novo'] # Usar nome dos dados originais
-
-                            # st.write(f"DEBUG: Processo selecionado na tabela - ID: {selected_process_id}, Nome: {selected_process_name}") # Debug removed
                             
                             col_edit_btn, col_delete_btn = st.columns(2)
                             with col_edit_btn:

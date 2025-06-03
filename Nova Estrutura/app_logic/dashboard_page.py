@@ -3,6 +3,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 import logging
 import altair as alt # Importar Altair para gráficos mais avançados
+import os
+import base64 # Importar base64 para codificar imagens
 
 # Assuming db_manager is accessible or can be imported similarly to followup_importacao_page
 try:
@@ -12,6 +14,41 @@ except ImportError:
     st.stop() # Stop execution if essential module is missing
 
 logger = logging.getLogger(__name__)
+
+# --- Função para definir imagem de fundo com opacidade (copiada de app_main.py) ---
+def set_background_image(image_path):
+    try:
+        with open(image_path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        st.markdown(
+            f"""
+            <style>
+            .stApp {{
+                background-color: transparent !important; /* Garante que o fundo do app seja transparente */
+            }}
+            .stApp::before {{
+                content: "";
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-image: url("data:image/png;base64,{encoded_string}");
+                background-size: cover;
+                background-position: center;
+                background-repeat: no-repeat;
+                background-attachment: fixed;
+                opacity: 0.20; /* Opacidade ajustada para 20% */
+                z-index: -1; /* Garante que o pseudo-elemento fique atrás do conteúdo */
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+    except FileNotFoundError:
+        st.warning(f"A imagem de fundo não foi encontrada no caminho: {image_path}")
+    except Exception as e:
+        st.error(f"Erro ao carregar a imagem de fundo: {e}")
 
 def _load_processes_for_dashboard():
     """Carrega todos os processos do DB para a dashboard."""
@@ -37,6 +74,12 @@ def _load_processes_for_dashboard():
         return []
 
 def show_dashboard_page():
+    # --- Configuração da Imagem de Fundo para o Dashboard ---
+    # Certifique-se de que o caminho para a imagem esteja correto
+    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
+    set_background_image(background_image_path)
+    # --- Fim da Configuração da Imagem de Fundo ---
+
     st.subheader("Dashboard de Follow-up")
 
     # Ensure DB connection and table creation for dashboard
@@ -227,3 +270,4 @@ def show_dashboard_page():
     st.markdown("---")
 
     st.write("Esta dashboard oferece uma visão geral dos processos de importação.")
+

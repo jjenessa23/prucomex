@@ -9,6 +9,10 @@ import pandas as pd # Will be useful for data handling
 import hashlib # For user password hashing
 from typing import Optional, Dict, Any, List, Tuple # Importa Optional, Dict, Any, List, Tuple
 
+# Importar followup_db_manager aqui para garantir que seja acessível
+import followup_db_manager
+
+
 logger = logging.getLogger(__name__)
 
 # Default DB path (adjust as needed for deployment)
@@ -137,7 +141,7 @@ def create_tables():
             if not criar_tabela_users(conn_users): # Chama a função dedicada
                 success = False
             conn_users.close()
-            logger.info("Tabela Users verificada/criada.")
+            logger.info("Tabela Users verificada/creada.")
         except Exception as e:
             logger.error(f"Erro ao criar tabela Users: {e}")
             if conn_users: conn_users.rollback()
@@ -326,7 +330,7 @@ def create_tables():
     # Create Follow-up tables
     # This part will now rely on followup_db_manager to create its tables
     # We just ensure the path is set for followup_db_manager
-    import followup_db_manager
+    # import followup_db_manager # Já importado no topo do arquivo
     followup_db_manager.set_followup_db_path(get_db_path("followup"))
     conn_followup = followup_db_manager.conectar_followup_db()
     if conn_followup:
@@ -378,6 +382,24 @@ def verify_credentials(username: str, password: str) -> Optional[Dict[str, Any]]
     except Exception as e:
         logger.error(f"Erro ao verificar credenciais para o usuário {username}: {e}")
         return None
+    finally:
+        if conn: conn.close()
+
+# NOVO: Função para obter todos os usuários do banco de dados
+def get_all_users() -> List[Dict[str, Any]]:
+    """Obtém todos os usuários da tabela 'users' no banco de dados."""
+    conn = connect_db(get_db_path("users"))
+    if not conn:
+        logger.error("Falha na conexão com o DB de usuários para obter todos os usuários.")
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, username, is_admin FROM users ORDER BY username ASC")
+        users = cursor.fetchall()
+        return [dict(user) for user in users]
+    except Exception as e:
+        logger.error(f"Erro ao obter todos os usuários do DB: {e}")
+        return []
     finally:
         if conn: conn.close()
 
@@ -677,7 +699,6 @@ def parse_xml_data_to_dict(xml_file_content: str) -> Tuple[Optional[Dict[str, An
                 item_counter_in_adicao += 1
 
         return di_data, itens_data
-
     except ET.ParseError as pe:
         logger.error(f"Erro ao analisar o conteúdo XML: {pe}")
         return None, None
@@ -688,7 +709,6 @@ def parse_xml_data_to_dict(xml_file_content: str) -> Tuple[Optional[Dict[str, An
 def save_parsed_di_data(di_data: Dict[str, Any], itens_data: List[Dict[str, Any]]):
     conn = connect_db(get_db_path("xml_di"))
     if not conn: return False
-
     try:
         cursor = conn.cursor()
         cursor.execute('''
@@ -704,8 +724,9 @@ def save_parsed_di_data(di_data: Dict[str, Any], itens_data: List[Dict[str, Any]
             di_data.get('numero_di'), di_data.get('data_registro'), di_data.get('vmle'), di_data.get('arquivo_origem'), di_data.get('data_importacao'),
             di_data.get('informacao_complementar'), di_data.get('vmle'), di_data.get('frete'), di_data.get('seguro'), di_data.get('vmld'),
             di_data.get('ipi'), di_data.get('pis_pasep'), di_data.get('cofins'), di_data.get('icms_sc'),
-            di_data.get('taxa_cambial_usd'), di_data.get('taxa_siscomex'), di_data.get('numero_invoice'), di_data.get('peso_bruto'), di_data.get('peso_liquido'),
-            di_data.get('cnpj_importador'), di_data.get('importador_nome'), di_data.get('recinto'), di_data.get('embalagem'),
+            di_data.get('taxa_cambial_usd'), di_data.get('taxa_siscomex'), di_data.get('numero_invoice'),
+            di_data.get('peso_bruto'), di_data.get('peso_liquido'), di_data.get('cnpj_importador'),
+            di_data.get('importador_nome'), di_data.get('recinto'), di_data.get('embalagem'),
             di_data.get('quantidade_volumes'), di_data.get('acrescimo'), di_data.get('imposto_importacao'),
             di_data.get('armazenagem'), di_data.get('frete_nacional')
         ))
@@ -736,7 +757,6 @@ def save_parsed_di_data(di_data: Dict[str, Any], itens_data: List[Dict[str, Any]
         
         conn.commit()
         return True
-
     except sqlite3.IntegrityError as e:
         logger.error(f"Erro de integridade: A DI {di_data.get('numero_di')} já existe. {e}")
         return False
@@ -801,9 +821,8 @@ def update_declaracao(declaracao_id: int, di_data: Dict[str, Any]):
                 frete_nacional = ?
             WHERE id = ?
         ''', (
-            di_data.get('numero_di'), di_data.get('data_registro'), di_data.get('valor_total_reais_xml'),
-            di_data.get('arquivo_origem'), di_data.get('data_importacao'), di_data.get('informacao_complementar'),
-            di_data.get('vmle'), di_data.get('frete'), di_data.get('seguro'), di_data.get('vmld'),
+            di_data.get('numero_di'), di_data.get('data_registro'), di_data.get('vmle'), di_data.get('arquivo_origem'), di_data.get('data_importacao'),
+            di_data.get('informacao_complementar'), di_data.get('vmle'), di_data.get('frete'), di_data.get('seguro'), di_data.get('vmld'),
             di_data.get('ipi'), di_data.get('pis_pasep'), di_data.get('cofins'), di_data.get('icms_sc'),
             di_data.get('taxa_cambial_usd'), di_data.get('taxa_siscomex'), di_data.get('numero_invoice'),
             di_data.get('peso_bruto'), di_data.get('peso_liquido'), di_data.get('cnpj_importador'),

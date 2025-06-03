@@ -1,8 +1,10 @@
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 import logging
 import urllib.parse # Para codificar URLs de e-mail
+from app_logic.utils import set_background_image, set_sidebar_background_image
 
 # Importar funções do módulo de utilitários de banco de dados
 from db_utils import (
@@ -336,6 +338,9 @@ def save_armazenagem_to_db():
 
 # --- Tela Principal do Streamlit para Portonave ---
 def show_page():
+    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
+    set_background_image(background_image_path)
+    
     st.subheader("Cálculo Armazenagem Portuária - Portonave")
 
     # Inicializa o estado da sessão para esta página

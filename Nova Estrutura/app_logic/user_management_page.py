@@ -4,6 +4,7 @@ import logging
 import hashlib # Para hashing de senha
 import os # Para verificar a existência do DB
 from typing import Dict, Optional, Any, List
+from app_logic.utils import set_background_image, set_sidebar_background_image
 
 # Configuração de logging para este módulo
 logger = logging.getLogger(__name__)
@@ -372,6 +373,9 @@ def display_delete_user_confirm_popup():
 
 
 def show_page():
+    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
+    set_background_image(background_image_path)
+    
     st.title("Gerenciamento de Usuários")
     logger.debug("Executando show_page da user_management_page.") # Debugging
 

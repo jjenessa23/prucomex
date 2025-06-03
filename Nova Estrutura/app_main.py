@@ -2,38 +2,252 @@ import streamlit as st
 import os
 import sys
 import logging
-import sqlite3 # Importar sqlite3 para manipulação de arquivos de DB
-import hashlib # Necessário para hash de senha, mesmo com db_utils real
-import base64 # Importar base64 para codificar imagens
+import sqlite3
+import hashlib
+import base64
 
-# st.set_page_config() DEVE SER A PRIMEIRA CHAMADA STREAMLIT NO SCRIPT
+# Importar funções de utilidade do novo módulo
+from app_logic.utils import set_background_image, set_sidebar_background_image
+
 st.set_page_config(layout="wide", page_title="Gerenciamento COMEX")
 
-# Injetar CSS personalizado para ocultar o botão de fullscreen das imagens
+# Injetar CSS personalizado para ajustar layout e ocultar elementos indesejados
 st.markdown("""
 <style>
 /* Oculta o botão de fullscreen que aparece ao passar o mouse sobre as imagens */
 button[title="View fullscreen"] {
-    display: none !important; /* Adicionado !important para forçar a ocultação */
+    display: none !important;
 }
 /* Ajustes para reduzir o espaço ao redor da logo da sidebar */
 [data-testid="stSidebarUserContent"] {
-    padding-top: 0px !important; /* Reduz o padding superior do conteúdo da sidebar */
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
+}
+[data-testid="stSidebarUserContent"] .stImage {
+    margin-top: 0px !important;
+    margin-bottom: 0px !important;
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
 }
 [data-testid="stSidebarUserContent"] img {
-    margin-top: -75px; /* Move a imagem para cima */
-    margin-bottom: -50px; /* Reduz o espaço abaixo da imagem */
+    margin-top: 0px !important;
+    margin-bottom: 0px !important;
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
 }
+/* Ajustar margens do div de usuário/notificações na sidebar */
+.stSidebar [data-testid="stVerticalBlock"] > div:nth-child(2) > div:nth-child(1) > div:nth-child(1) {
+    margin-top: 0px !important;
+    margin-bottom: 0px !important;
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
+}
+/* Reduzir o padding dos botões na sidebar para um visual mais compacto */
+.stSidebar button {
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+    margin-top: 0.1rem !important;
+    margin-bottom: 0.1rem !important;
+}
+/* Remover margens e padding de subheaders na sidebar para compactar */
+.stSidebar h3 {
+    margin-top: 0.5rem !important;
+    margin-bottom: 0.5rem !important;
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
+}
+/* Ajustar margens e padding para a imagem principal (se necessário) */
+.main-logo-container {
+    margin-top: 0px !important;
+    margin-bottom: 0px !important;
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
+}
+.main-logo-container img {
+    margin-top: 0px !important;
+    margin-bottom: 0px !important;
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
+}
+
+/* Remover margens e padding do cabeçalho principal e do st-emotion-cache */
+/* Seletores genéricos para remover espaçamento padrão do Streamlit */
+.st-emotion-cache-z5fcl4, .st-emotion-cache-zq5wmm, .st-emotion-cache-1c7y2o2,
+.st-emotion-cache-1avcm0n, .st-emotion-cache-1dp5ifq, .st-emotion-cache-10qtn7d,
+.st-emotion-cache-1y4p8pa, .st-emotion-cache-ocqkz7, .st-emotion-cache-1gh0m0m,
+.st-emotion-cache-1vq4p4b {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+}
+
+/* Remover padding do cabeçalho do Streamlit */
+header {
+    padding: 0 !important;
+}
+
+/* Remover padding e margem de elementos de bloco no topo */
+.block-container {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+}
+
+/* Ajustar o padding do main content para que o conteúdo comece mais para cima */
+.stApp > header {
+    height: 0px !important;
+}
+
+/* Ajustar o padding do main content para que o conteúdo comece mais para cima */
+.main .block-container {
+    padding-top: 0rem !important;
+    padding-right: 1rem !important;
+    padding-left: 1rem !important;
+    padding-bottom: 1rem !important;
+}
+
+/* Remover espaço superior do título da página */
+h1, h2, h3, h4, h5, h6 {
+    margin-top: 0rem !important;
+    padding-top: 0rem !important;
+}
+
+/* Ajustar margem superior do primeiro elemento após o cabeçalho */
+.stApp > div:first-child > div:first-child {
+    margin-top: 0 !important;
+}
+
+/* Ocultar a barra de decoração superior do Streamlit */
+[data-testid="stDecoration"] {
+    display: none !important;
+}
+
+/* Ocultar o "Deploy" e os três pontos no canto superior direito */
+.st-emotion-cache-s1qj3df {
+    display: none !important;
+}
+
+/* Ajustar o padding do conteúdo dentro da sidebar para um visual mais compacto */
+[data-testid="stSidebarContent"] {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+}
+
+/* Ocultar o cabeçalho do Streamlit que pode conter o título da página ou outros elementos */
+.st-emotion-cache-10qtn7d, .st-emotion-cache-1a3f5x, .st-emotion-cache-1avcm0n {
+    display: none !important;
+}
+
+/* Ocultar o texto de status no canto superior esquerdo */
+[data-testid="stStatusWidget"],
+.st-emotion-cache-1jm6g5k,
+.st-emotion-cache-1r6dm1k,
+.st-emotion-cache-1d3jo8e,
+body > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > div:first-child,
+body > div:nth-child(1) > div:nth-child(1) > div:first-child > div:first-child > div:first-child,
+body > div:nth-child(1) > div:first-child > div:first-child > div:first-child,
+.st-emotion-cache-1g8w69,
+.st-emotion-cache-1v04791,
+.st-emotion-cache-1kyx2u8 {
+    display: none !important;
+}
+
+/* Ajustes para centralizar horizontalmente os inputs de texto e labels na tela de login */
+/* E definir um tamanho máximo para os inputs de texto */
+.st-emotion-cache-h5rpjc, /* Seletor comum para o container de inputs de texto */
+.st-emotion-cache-kjg0a8 { /* Outro seletor possível para o wrapper de inputs */
+    max-width: 300px; /* Define a largura máxima do container/input */
+    margin-left: auto;
+    margin-right: auto;
+    float: none; /* Garante que não haja float que impeça o margin auto */
+}
+
+/* Alinhar o label do input à esquerda (conforme a imagem) */
+div[data-testid="stTextInput"] label { /* Alvo: o label dentro do stTextInput */
+    display: block;
+    text-align: left; /* Alinha o texto do label à esquerda */
+    width: 100%; /* Garante que o label ocupe a largura total para alinhar o texto */
+    /* Removido padding-left aqui, pois o input será centralizado e o label deve seguir */
+}
+
+/* Centralizar os inputs de texto */
+div[data-testid="stTextInput"] > div > div > input {
+    max-width: 250px; /* Ajusta a largura do campo de input */
+    min-width: 150px; /* Define uma largura mínima para o campo de input */
+    margin-left: 15px;
+    margin-right: auto;
+    display: block; /* Para que margin auto funcione */
+}
+
+/* Adicionar espaçamento entre os campos de entrada */
+div[data-testid="stTextInput"] {
+    margin-bottom: 15px; /* Espaçamento entre os campos de texto */
+}
+
+/* Centralizar o botão de Entrar e adicionar espaçamento */
+div[data-testid="stForm"] button {
+    display: block; /* Para que margin auto funcione */
+    margin-left: 15px;
+    margin-right: 15px;
+    float: none;
+    margin-top: 15px; /* Espaçamento acima do botão */
+}
+
+/* Centralizar verticalmente o conteúdo principal da página de login */
+/* Alvo: O container principal da página que contém as colunas do formulário */
+.stApp > div > div > div.main > div.block-container {
+    display: flex;
+    flex-direction: column;
+    justify-content: center; /* Centraliza verticalmente o conteúdo */
+    align-items: center; /* Centraliza horizontalmente o bloco inteiro */
+    min-height: 100vh; /* Garante que o container ocupe a altura total da viewport */
+    padding-top: 0 !important; /* Reduzir padding superior para melhor centralização */
+    padding-bottom: 0 !important; /* Reduzir padding inferior */
+}
+
+/* Adicionar opacidade à imagem de fundo do login SEM afetar o conteúdo */
+/* A imagem de fundo é definida pela função set_background_image (geralmente no body ou html) */
+/* Para dar a ela uma aparência opaca, aplicamos um overlay semi-transparente ao .stApp */
+.stApp {
+    background-color: rgba(0, 0, 0, 0.7); /* Camada semi-transparente sobre o fundo */
+    background-blend-mode: multiply; /* Mistura a cor com a imagem de fundo */
+    background-size: cover; /* Garante que a imagem de fundo cubra o elemento */
+    background-position: center; /* Centraliza a imagem de fundo */
+    background-repeat: no-repeat; /* Evita a repetição da imagem de fundo */
+    transition: background-color 0.5s ease-in-out; /* Transição suave para a cor de fundo */
+}
+
 </style>
 """, unsafe_allow_html=True)
 
 
-# Importar o módulo de utilitários de banco de dados
+# Importar o módulo de utilitários de banco de dados (direto, pois está na mesma pasta)
 try:
     import db_utils
 except ImportError:
-    st.error("ERRO CRÍTICO: O módulo 'db_utils' não foi encontrado. Por favor, certifique-se de que 'db_utils.py' está no diretório 'app_logic' ou na raiz do projeto e que todas as dependências estão instaladas.")
+    st.error("ERRO CRÍTICO: O módulo 'db_utils' não foi encontrado. Por favor, certifique-se de que 'db_utils.py' está no mesmo diretório que 'app_main.py' e que todas as dependências estão instaladas.")
     st.stop() # Interrompe a execução do aplicativo se o db_utils não puder ser importado
+
+# Importar followup_db_manager diretamente
+import followup_db_manager
+
+# Importar as páginas da pasta 'app_logic'
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app_logic'))
+
+from app_logic import custo_item_page
+from app_logic import analise_xml_di_page
+from app_logic import detalhes_di_calculos_page
+from app_logic import descricoes_page
+from app_logic import calculo_portonave_page
+from app_logic import followup_importacao_page
+from app_logic import user_management_page
+from app_logic import dashboard_page
+from app_logic import notification_page
+
 
 # Configuração de logging (simplificada para Streamlit)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -48,124 +262,142 @@ def authenticate_user(username, password):
 
 # --- Inicialização do Banco de Dados ---
 # Garante que as tabelas existam ao iniciar o aplicativo
-if 'db_initialized' not in st.session_state:
-    st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
-    # Tenta criar o diretório 'data' se não existir
-    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    if not os.path.exists(data_dir):
-        try:
-            os.makedirs(data_dir)
-            logger.info(f"Diretório de dados '{data_dir}' criado.")
-            st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
-        except OSError as e:
-            logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
-            st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
-            st.session_state.db_initialized = False
-            st.stop() # Adicionado st.stop() para evitar que o app continue com erro crítico
-    else:
-        st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
+# Estas mensagens de debug serão movidas para serem exibidas condicionalmente após o login
+# if 'db_initialized' not in st.session_state:
+#     st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
+#     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+#     if not os.path.exists(data_dir):
+#         try:
+#             os.makedirs(data_dir)
+#             logger.info(f"Diretório de dados '{data_dir}' criado.")
+#             st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
+#         except OSError as e:
+#             logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
+#             st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
+#             st.session_state.db_initialized = False
+#             st.stop()
+#     else:
+#         st.info(f"DEBUG: Diretorio de dados '{data_dir}' já existe.")
 
-    # Tenta criar as tabelas gerais e de usuário
-    st.info("DEBUG: Chamando db_utils.create_tables()...")
-    tables_created_general = db_utils.create_tables()
-    st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
+#     st.info("DEBUG: Chamando db_utils.create_tables()...")
+#     tables_created_general = db_utils.create_tables()
+#     st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
 
-    tables_created_user = True # Assumimos que create_tables() já cuidou da tabela de usuários
-
-    if tables_created_general and tables_created_user:
-        st.session_state.db_initialized = True
-        logger.info("Bancos de dados e tabelas inicializados com sucesso.")
-        st.success("DEBUG: Bancos de dados e tabelas inicializados com sucesso.")
-    else:
-        st.session_state.db_initialized = False
-        logger.error("Falha ao inicializar bancos de dados e tabelas.")
-        st.error("ERRO CRÍTICO: Falha ao inicializar bancos de dados e tabelas. Verifique os logs.")
+#     tables_created_user = True
+#     if tables_created_general and tables_created_user:
+#         st.session_state.db_initialized = True
+#         logger.info("Bancos de dados e tabelas inicializados com sucesso.")
+#         st.success("DEBUG: Bancos de dados e tabelas inicializados com sucesso.")
+#     else:
+#         st.session_state.db_initialized = False
+#         logger.error("Falha ao inicializar bancos de dados e tabelas.")
+#         st.error("ERRO CRÍTICO: Falha ao inicializar bancos de dados e tabelas. Verifique os logs.")
 
 # --- Estado da Sessão ---
-# Inicializa as variáveis de estado da sessão se ainda não existirem
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user_info' not in st.session_state:
     st.session_state.user_info = None
 if 'current_page' not in st.session_state:
-    st.session_state.current_page = "Home" # Página inicial padrão
-
-# --- Funções de Navegação ---
-def navigate_to(page_name):
-    """
-    Define a página atual no estado da sessão e força um rerun para mudar de página.
-    """
-    st.session_state.current_page = page_name
-    st.rerun()
-
-# --- Páginas (Módulos) ---
-# Importa as funções que representam suas "views" do diretório 'app_logic'
-# Certifique-se de que o diretório 'app_logic' está no PYTHONPATH ou no mesmo diretório.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app_logic'))
-
-from app_logic import custo_item_page
-from app_logic import analise_xml_di_page
-from app_logic import detalhes_di_calculos_page
-from app_logic import descricoes_page
-from app_logic import calculo_portonave_page
-from app_logic import followup_importacao_page
-from app_logic import user_management_page # Importa a página de Gerenciamento de Usuários
-from app_logic import dashboard_page # Importa a nova página de Dashboard
-# from app_logic import notification_page # Removido o import global, será feito na Home
+    st.session_state.current_page = "Home"
 
 # Mapeamento de nomes de páginas para as funções de exibição
 PAGES = {
-    "Home": None, # A página Home será tratada diretamente no app_main
+    "Home": None,
     "Dashboard": dashboard_page.show_dashboard_page,
     "Descrições": descricoes_page.show_page,
-    "Listagem NCM": None, # Placeholder (em desenvolvimento)
+    "Listagem NCM": None,
     "Follow-up Importação": followup_importacao_page.show_page,
     "Importar XML DI": analise_xml_di_page.show_page,
     "Pagamentos": detalhes_di_calculos_page.show_page,
     "Custo do Processo": custo_item_page.show_page,
     "Cálculo Portonave": calculo_portonave_page.show_page,
-    "Análise de Documentos": None, # Placeholder (em desenvolvimento)
-    "Pagamentos Container": None, # Placeholder (em desenvolvimento)
-    "Cálculo de Tributos TTCE": None, # Placeholder (em desenvolvimento)
+    "Análise de Documentos": None,
+    "Pagamentos Container": None,
+    "Cálculo de Tributos TTCE": None,
     "Gerenciamento de Usuários": user_management_page.show_page,
-    # "Central de Notificações": notification_page.show_page, # Removido do menu lateral
+    "Gerenciar Notificações": notification_page.show_admin_notification_page,
 }
 
 # --- Tela de Login ---
 if not st.session_state.authenticated:
-    st.title("Login - Gerenciamento COMEX")
-    username = st.text_input("Usuário")
-    password = st.text_input("Senha", type="password")
+    # Definir fundo para a tela de login
+    login_background_image_path = os.path.join(os.path.dirname(__file__), 'assets', 'fundo_login.png')
+    # Nota: A função set_background_image não aceita o argumento 'opacity'.
+    # A opacidade global da aplicação é controlada via CSS no bloco <style>.
+    set_background_image(login_background_image_path) # Usar a função de fundo para o login
+     
+    # Removido o título "Login - Gerenciamento COMEX" conforme solicitado
+    # st.title("Login - Gerenciamento COMEX")
 
-    if st.button("Entrar"):
-        user_info = authenticate_user(username, password)
-        if user_info:
-            st.session_state.authenticated = True
-            st.session_state.user_info = user_info
-            st.success(f"Bem-vindo, {user_info['username']}!")
-            st.rerun() # Recarrega a página para mostrar a interface principal
-        else:
-            st.error("Usuário ou senha incorretos.")
-    st.info("Use 'admin'/'admin' para o login inicial (se db_utils simulado).")
+    # Usar colunas para centralizar os campos de login
+    col_empty_left, col_login_form, col_empty_right = st.columns([1, 0.7, 1])
+
+    with col_login_form:
+        
+        st.text("Gerenciamento COMEX")
+        
+        username = st.text_input("Usuário", key="login_username_input")
+        
+        password = st.text_input("Senha", type="password", key="login_password_input")
+
+        if st.button("Entrar"):
+            user_info = authenticate_user(username, password)
+            if user_info:
+                st.session_state.authenticated = True
+                st.session_state.user_info = user_info
+                st.success(f"Bem-vindo, {user_info['username']}!")
+                # Mover mensagens de debug de DB para depois do login
+                if 'db_initialized' not in st.session_state:
+                    st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
+                    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+                    if not os.path.exists(data_dir):
+                        try:
+                            os.makedirs(data_dir)
+                            logger.info(f"Diretório de dados '{data_dir}' criado.")
+                            st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
+                        except OSError as e:
+                            logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
+                            st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
+                            st.session_state.db_initialized = False
+                    else:
+                        st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
+
+                    st.info("DEBUG: Chamando db_utils.create_tables()...")
+                    tables_created_general = db_utils.create_tables()
+                    st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
+
+                    # tables_created_user = True # Assumimos que create_tables() já cuidou da tabela de usuários
+                    if tables_created_general: # Simplificado, pois create_tables() já cuida de usuários
+                        st.session_state.db_initialized = True
+                        logger.info("Bancos de dados e tabelas inicializados com sucesso.")
+                        st.success("DEBUG: Bancos de dados e tabelas inicializados com sucesso.")
+                    else:
+                        st.session_state.db_initialized = False
+                        logger.error("Falha ao inicializar bancos de dados e tabelas.")
+                        st.error("ERRO CRÍTICO: Falha ao inicializar bancos de dados e tabelas. Verifique os logs.")
+                st.rerun()
+            else:
+                st.error("Usuário ou senha incorretos.")
+                
+        st.info("Informe as credenciais de login ao sistema para continuar.")            
+
+       
+
 else:
     # --- Barra Lateral de Navegação (Menu) ---
-    # st.sidebar.title("Menu Principal") # Removido o título "Menu Principal"
-    
-    # Adicionar a logo no canto superior esquerdo da barra lateral
     logo_sidebar_path = os.path.join(os.path.dirname(__file__), 'assets', 'Logo.png')
     if os.path.exists(logo_sidebar_path):
         st.sidebar.image(logo_sidebar_path, use_container_width=True)
     else:
-        st.sidebar.markdown("### [Logo Superior Esquerda]")
+        pass 
 
-    # Importar notification_page_module aqui para acessar o estado das notificações
-    import app_logic.notification_page as notification_page_module
-    num_notifications = len(st.session_state.get('notifications', []))
+    num_notifications = notification_page.get_notification_count_for_user(st.session_state.get('user_info', {}).get('username'))
 
     st.sidebar.markdown(f"""
         <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px; margin-bottom: 10px;">
             <div style="display: flex; align-items: center;">
-                <span style="font-size: 1rem; font-weight: bold; color: white;">Usuário: {st.session_state.user_info['username']}</span>
+                <span style="font-size: 1rem; font-weight: bold; color: gray;">Usuário: {st.session_state.user_info['username']}</span>
             </div>
             <div style="display: flex; align-items: center; cursor: pointer;">
                 <i class="fa-solid fa-bell" style="font-size: 1.2rem; color: yellow; margin-right: 5px;"></i>
@@ -175,105 +407,104 @@ else:
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     """, unsafe_allow_html=True)
 
+    # --- Configuração da Imagem de Fundo para a Sidebar ---
+    sidebar_background_image_path = os.path.join(os.path.dirname(__file__), 'assets', 'logo_navio_atracado.png')
+    set_sidebar_background_image(sidebar_background_image_path, opacity=0.3)
+    # --- Fim da Configuração da Imagem de Fundo da Sidebar ---
+
+    def navigate_to(page_name):
+        st.session_state.current_page = page_name
+        st.rerun()
 
     # Menu "Início"
-    if st.sidebar.button("Tela Inicial", key="menu_home", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Tela Inicial", key="menu_home", use_container_width=True):
         navigate_to("Home")
-
     # Menu "Dashboard"
-    if st.sidebar.button("Dashboard", key="menu_dashboard", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Dashboard", key="menu_dashboard", use_container_width=True):
         navigate_to("Dashboard")
-
     # Menu "Descrições"
-    if st.sidebar.button("Descrições", key="menu_descricoes", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Descrições", key="menu_descricoes", use_container_width=True):
         navigate_to("Descrições")
-
     # Menu "Listagem NCM" (em desenvolvimento)
-    if st.sidebar.button("Listagem NCM", key="menu_ncm", use_container_width=True): # Ajuste de layout
-        navigate_to("Listagem NCM") # Navega para a página (mesmo que seja placeholder)
-
+    if st.sidebar.button("Listagem NCM", key="menu_ncm", use_container_width=True):
+        navigate_to("Listagem NCM")
     # Menu "Follow-up"
-    if st.sidebar.button("Follow-up Importação", key="menu_followup", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Follow-up Importação", key="menu_followup", use_container_width=True):
         navigate_to("Follow-up Importação")
-
     # Menu "Registros"
     st.sidebar.subheader("Registros")
-    if st.sidebar.button("Importar XML DI", key="menu_xml_di", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Importar XML DI", key="menu_xml_di", use_container_width=True):
         navigate_to("Importar XML DI")
-    if st.sidebar.button("Pagamentos", key="menu_pagamentos", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Pagamentos", key="menu_pagamentos", use_container_width=True):
         navigate_to("Pagamentos")
-    if st.sidebar.button("Custo do Processo", key="menu_custo_processo", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Custo do Processo", key="menu_custo_processo", use_container_width=True):
         navigate_to("Custo do Processo")
-    
     # Menu "Cálculos"
     st.sidebar.subheader("Cálculos")
-    if st.sidebar.button("Cálculo Portonave", key="menu_calculo_portonave", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Cálculo Portonave", key="menu_calculo_portonave", use_container_width=True):
         navigate_to("Cálculo Portonave")
-
-    # Menu "Telas em desenvolvimento" (mantido para itens não movidos para páginas)
+    # Menu "Telas em desenvolvimento"
     st.sidebar.subheader("Telas em desenvolvimento")
-    if st.sidebar.button("Análise de Documentos", key="menu_analise_documentos", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Análise de Documentos", key="menu_analise_documentos", use_container_width=True):
         navigate_to("Análise de Documentos")
-    if st.sidebar.button("Pagamentos Container", key="menu_pagamento_container", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Pagamentos Container", key="menu_pagamento_container", use_container_width=True):
         navigate_to("Pagamentos Container")
-    if st.sidebar.button("Cálculo de Tributos TTCE", key="menu_ttce_api", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Cálculo de Tributos TTCE", key="menu_ttce_api", use_container_width=True):
         navigate_to("Cálculo de Tributos TTCE")
 
     # Menu "Administrador" (visível apenas para admin)
-    if st.session_state.user_info and st.session_state.user_info['is_admin']: # Condição para mostrar a seção Admin
-        st.sidebar.subheader("Administrador") # Manter o subheader para a seção
-        if st.sidebar.button("Gerenciamento de Usuários", key="menu_user_management", use_container_width=True): # Ajuste de layout
+    if st.session_state.user_info and st.session_state.user_info['is_admin']:
+        st.sidebar.subheader("Administrador")
+        if st.sidebar.button("Gerenciamento de Usuários", key="menu_user_management", use_container_width=True):
             navigate_to("Gerenciamento de Usuários")
+        if st.sidebar.button("Gerenciar Notificações", key="menu_manage_notifications", use_container_width=True):
+            navigate_to("Gerenciar Notificações")
         
         st.sidebar.markdown("---")
         st.sidebar.write("Seleção de Bancos (simulada)")
-        if st.sidebar.button("Selecionar Banco Produtos...", key="select_db_produtos", use_container_width=True): # Ajuste de layout
+        if st.sidebar.button("Selecionar Banco Produtos...", key="select_db_produtos", use_container_width=True):
             st.sidebar.info("Funcionalidade de seleção de DB simulada.")
-        if st.sidebar.button("Selecionar Banco NCM...", key="select_db_ncm", use_container_width=True): # Ajuste de layout
+        if st.sidebar.button("Selecionar Banco NCM...", key="select_db_ncm", use_container_width=True):
             st.sidebar.info("Funcionalidade de seleção de DB simulada.")
 
     # Botão de Sair
     st.sidebar.markdown("---")
-    if st.sidebar.button("Sair", key="logout_button", use_container_width=True): # Ajuste de layout
+    if st.sidebar.button("Sair", key="logout_button", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user_info = None
         st.session_state.current_page = "Home"
         st.rerun()
 
     # --- Conteúdo Principal (Baseado na Página Selecionada) ---
-    st.markdown("---") # Separador visual
+    st.markdown("---")
 
     if st.session_state.current_page == "Home":
-        st.header("Bem-vindo ao Gerenciamento COMEX") # Título alterado
-        st.write("Use o menu lateral para navegar.") # Texto alterado
+        # Configuração da Imagem de Fundo para a página Home (pós-login)
+        background_image_path = os.path.join(os.path.dirname(__file__), 'assets', 'logo_navio_atracado.png')
+        # Nota: A função set_background_image não aceita o argumento 'opacity'.
+        # A opacidade global da aplicação é controlada via CSS no bloco <style>.
+        set_background_image(background_image_path)
 
-        # Usando a logo da empresa na tela inicial
-        logo_main_path = os.path.join(os.path.dirname(__file__), 'assets', 'Logo_empresa.png')
-        if os.path.exists(logo_main_path):
-            st.image(logo_main_path, width=400) # Ajuste de tamanho para a logo principal
-        else:
-            st.image("https://placehold.co/400x200/2E2E2E/EAEAEA?text=Logo+da+Empresa", width=400) # Ajuste de tamanho para a logo principal
+        st.header("Bem-vindo ao Gerenciamento COMEX")
+        st.write("Use o menu lateral para navegar.")
         
         # Central de Notificações
-        notification_page_module.display_notifications_on_home() # Chamada da função sem subheader
-        st.markdown("---") # Separador após notificações
+        notification_page.display_notifications_on_home(st.session_state.get('user_info', {}).get('username'))
+        st.markdown("---")
         
         st.write(f"Versão da Aplicação: {st.session_state.get('app_version', '1.0.0')}")
         st.write("Status dos Bancos de Dados:")
-        if st.session_state.db_initialized:
+        if st.session_state.get('db_initialized', False): # Verifica se já foi inicializado
             st.success("- Bancos de dados inicializados e conectados.")
         else:
             st.error("- Falha na conexão/inicialização dos bancos de dados.")
         
-        # Debug abaixo dos status dos bancos de dados
         st.info("DEBUG: Módulo 'db_utils' real importado com sucesso.")
 
     elif st.session_state.current_page in PAGES and PAGES[st.session_state.current_page] is not None:
-        # Verifica se a página é uma das "em desenvolvimento" e exibe o aviso
         if st.session_state.current_page in ["Listagem NCM", "Análise de Documentos", "Pagamentos Container", "Cálculo de Tributos TTCE"]:
             st.warning(f"Tela de {st.session_state.current_page} (em desenvolvimento)")
         
-        # Chama a função show_page() da página selecionada
         PAGES[st.session_state.current_page]()
     else:
         st.info(f"Página '{st.session_state.current_page}' em desenvolvimento ou não encontrada.")

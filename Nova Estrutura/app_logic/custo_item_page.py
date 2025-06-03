@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -14,6 +15,7 @@ from reportlab.lib import colors
 from reportlab.lib.utils import ImageReader
 import logging
 import sqlite3 # Importar sqlite3 para verificar tipo de dado
+from app_logic.utils import set_background_image, set_sidebar_background_image
 
 # Importar funções do novo módulo de utilitários de banco de dados
 from db_utils import get_declaracao_by_referencia, get_itens_by_declaracao_id, update_xml_item_erp_code, get_process_cost_data, save_process_cost_data
@@ -901,6 +903,8 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
 
 # --- Função Principal da Página de Custo ---
 def show_page():
+    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
+    set_background_image(background_image_path)
     # Inicializa as variáveis de estado no início da função
     if 'di_data' not in st.session_state:
         st.session_state.di_data = None
