@@ -45,27 +45,38 @@ def hash_password(password, username):
 def adicionar_usuario_db(username, password, is_admin=False, allowed_screens_list=None):
     """Adiciona um novo usuário ao banco de dados."""
     db_path = db_utils.get_db_path("users")
+    st.info(f"DEBUG: Caminho do DB de usuários: {db_path}") # Debugging: Mostra o caminho do DB
     conn = db_utils.connect_db(db_path)
     if conn is None:
         st.error("Não foi possível conectar ao banco de dados de usuários.")
+        logger.error(f"Falha ao conectar ao DB de usuários em {db_path}") # Debugging: Loga falha de conexão
         return False
 
     try:
-        # db_utils.criar_tabela_users(conn) # REMOVIDO: A criação da tabela deve ser feita apenas uma vez na inicialização (app_main)
         cursor = conn.cursor()
         
         # Verifica se o nome de usuário já existe
         cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
         if cursor.fetchone():
             st.error(f"O nome de usuário '{username}' já existe.")
+            logger.warning(f"Tentativa de adicionar usuário existente: {username}") # Debugging: Loga usuário existente
             return False
 
         password_hash = hash_password(password, username)
         allowed_screens_str = ",".join(allowed_screens_list) if allowed_screens_list else ""
 
+        logger.info(f"DEBUG: Tentando inserir usuário '{username}' no DB.") # Debugging: Antes da inserção
         cursor.execute("INSERT INTO users (username, password_hash, is_admin, allowed_screens) VALUES (?, ?, ?, ?)",
                        (username, password_hash, 1 if is_admin else 0, allowed_screens_str))
+        
+        row_count = cursor.rowcount # Obtém o número de linhas afetadas
+        logger.info(f"DEBUG: Linhas afetadas pela inserção: {row_count}") # Debugging: Linhas afetadas
+        st.info(f"DEBUG: Linhas afetadas pela inserção: {row_count}") # Debugging: Mostra linhas afetadas no Streamlit
+
         conn.commit()
+        logger.info(f"DEBUG: conn.commit() executado para o usuário '{username}'.") # Debugging: Confirma commit
+        st.info(f"DEBUG: Commit no DB executado para o usuário '{username}'.") # Debugging: Mostra commit no Streamlit
+
         logger.info(f"Usuário '{username}' adicionado (Admin: {is_admin}, Telas: {allowed_screens_str}).")
         st.success(f"Usuário '{username}' adicionado com sucesso!")
         return True
@@ -77,19 +88,22 @@ def adicionar_usuario_db(username, password, is_admin=False, allowed_screens_lis
     finally:
         if conn:
             conn.close()
+            logger.info("DEBUG: Conexão com o DB de usuários fechada.") # Debugging: Confirma fechamento da conexão
 
 def obter_todos_usuarios_db():
     """Obtém a lista de todos os usuários do banco de dados."""
     db_path = db_utils.get_db_path("users")
+    st.info(f"DEBUG: Obtendo usuários do DB: {db_path}") # Debugging: Mostra o caminho do DB ao obter
     conn = db_utils.connect_db(db_path)
     if conn is None:
         st.error("Não foi possível conectar ao banco de dados de usuários.")
+        logger.error(f"Falha ao conectar ao DB de usuários em {db_path} para obter usuários.") # Debugging: Loga falha de conexão
         return []
     try:
-        # db_utils.criar_tabela_users(conn) # REMOVIDO: A criação da tabela deve ser feita apenas uma vez na inicialização (app_main)
         cursor = conn.cursor()
         cursor.execute("SELECT id, username, is_admin, allowed_screens FROM users ORDER BY username")
         users = cursor.fetchall()
+        logger.info(f"DEBUG: {len(users)} usuários obtidos do DB.") # Debugging: Quantidade de usuários obtidos
         return users
     except Exception as e:
         logger.exception("Erro ao obter todos os usuários")
@@ -107,7 +121,6 @@ def obter_usuario_por_id_db(user_id: int):
         st.error("Não foi possível conectar ao banco de dados de usuários.")
         return None
     try:
-        # db_utils.criar_tabela_users(conn) # REMOVIDO
         cursor = conn.cursor()
         cursor.execute("SELECT id, username, is_admin, allowed_screens FROM users WHERE id = ?", (user_id,))
         user_data = cursor.fetchone()
