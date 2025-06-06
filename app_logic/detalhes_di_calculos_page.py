@@ -18,6 +18,9 @@ from app_logic import calculo_futura_page
 from app_logic import calculo_paclog_elo_page
 from app_logic import calculo_fechamento_page
 from app_logic import calculo_fn_transportes_page # NOVO: Importar a página FN Transportes
+# NOVO: Importar a página de Frete Internacional
+from app_logic import calculo_frete_internacional_page
+
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +198,8 @@ def navigate_to_calc_page(page_name, di_id_session_key):
             st.session_state.fechamento_di_data = None
         elif page_name == "Cálculo FN Transportes": # NOVO: Limpeza para FN Transportes
             st.session_state.fn_transportes_di_data = None
+        elif page_name == "Cálculo Frete Internacional": # NOVO: Limpeza para Frete Internacional
+            st.session_state.frete_internacional_di_data = None
 
 
         st.session_state.current_page = page_name
@@ -227,7 +232,7 @@ def show_page():
     
     with col_input_field:
         di_input_value = st.text_input(
-            "ID da DI ou Referência para Carregar",
+            "Referência para Carregar",
             key="detalhes_di_load_input",
             value=st.session_state.detalhes_di_input_value
         )
@@ -317,11 +322,14 @@ def show_page():
                 icon_button("Floripa Air", "✈️", "calc_floripaair_button", disabled=True)
                 st.markdown("---")
 
-                # --- Categoria: Frete Nacional ---
-                st.markdown("###### Frete Nacional")
+                # --- Categoria: Fretes ---
+                st.markdown("###### Fretes")
                 # Habilitado o botão FN Transportes
-                if icon_button("FN Transportes", "🚚", "calc_fntransportes_button", disabled=False): # Habilitado
+                if icon_button("FN Transportes", "🚚", "calc_fntransportes_button", disabled=False):
                     navigate_to_calc_page("Cálculo FN Transportes", "selected_di_id_fn_transportes")
+                # NOVO: Botão para Frete Internacional
+                if icon_button("Frete Internacional", "🌍", "calc_frete_internacional_button", disabled=False):
+                    navigate_to_calc_page("Cálculo Frete Internacional", "selected_di_id_frete_internacional")
                 st.markdown("---")
 
                 # --- Categoria: Seguro ---

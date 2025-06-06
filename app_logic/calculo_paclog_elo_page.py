@@ -87,25 +87,27 @@ Obrigado(a),
 # --- Funções de Ação ---
 
 def _save_armazenagem_to_db():
-    """Salva o valor do Total a Depositar no banco de dados, na coluna 'armazenagem'."""
+    """Salva o valor da armazenagem calculada no banco de dados."""
     if 'elo_di_data' not in st.session_state or not st.session_state.elo_di_data:
         st.error("Não há dados da DI carregados para salvar a armazenagem.")
         return
 
     di_id = st.session_state.elo_di_data[0] # O ID da DI é o primeiro elemento da tupla
     
-    # O valor a ser salvo é o 'Total a Depositar' calculado
-    armazenagem_to_save_str = st.session_state.elo_total_a_depositar_display # <-- Alterado para Total a Depositar
+    # O valor a ser salvo é o 'Total Armazenagem' calculado (VMLD * 0.40%)
+    # Ele já está disponível em st.session_state.elo_total_a_depositar_display
+    # Precisamos convertê-lo de volta para float.
+    armazenagem_to_save_str = st.session_state.elo_total_a_depositar_display
     try:
         armazenagem_float = float(armazenagem_to_save_str.replace('R$', '').replace('.', '').replace(',', '.').strip())
     except ValueError:
-        st.error("Valor do Total a Depositar calculado inválido para salvar no banco de dados.")
+        st.error("Valor de Armazenagem calculado inválido para salvar no banco de dados.")
         return
 
     if update_declaracao_field(di_id, 'armazenagem', armazenagem_float):
-        st.success(f"Valor do Total a Depositar ({_format_currency(armazenagem_float)}) salvo com sucesso para a DI ID {di_id}!")
+        st.success(f"Valor de armazenagem ({_format_currency(armazenagem_float)}) salvo com sucesso para a DI ID {di_id}!")
     else:
-        st.error(f"Falha ao salvar o valor do Total a Depositar para a DI ID {di_id}.")
+        st.error(f"Falha ao salvar o valor de armazenagem para a DI ID {di_id}.")
 
 def load_elo_di_data(declaracao_id):
     """
@@ -257,7 +259,10 @@ def show_calculo_paclog_elo_page():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.join(current_dir, '..')
     app_root_dir = os.path.join(root_dir, '..')
-    background_image_path = os.path.join(app_root_dir, 'assets', 'logo_navio_atracado.png')
+    #background_image_path = os.path.join(app_root_dir, 'assets', 'logo_navio_atracado.png')
+    
+    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
+    
 
     try:
         from app_logic.utils import set_background_image
@@ -347,10 +352,10 @@ def show_calculo_paclog_elo_page():
     # NOVO: Exibição do "Total a Depositar" acima de "Taxas Extras" e "Diferença"
     st.markdown(f"##### **Total a Depositar:** {st.session_state.elo_total_a_depositar_display}")
     
-    st.markdown("---") # Separador
+   
 
     # Taxas Extras e Diferença
-    col_taxas_extras, col_diferenca = st.columns(2)
+    col_taxas_extras, col_diferenca,col1, col2,col3,col4 = st.columns(6)
     with col_taxas_extras:
         taxas_extras_input = st.text_input(
             "Taxas Extras (R$):",
@@ -377,7 +382,7 @@ def show_calculo_paclog_elo_page():
                     perform_elo_calculations()
                     st.rerun()
                 except ValueError:
-                    st.error("Valor inválido para Diferença.")
+                    st.error("Valor inválido para Taxas Extras.")
 
     with col_diferenca:
         diferenca_input = st.text_input(
@@ -415,11 +420,11 @@ def show_calculo_paclog_elo_page():
     with col_pis_cofins:
         st.markdown(f"**PIS/COFINS/ISS (12,25%):** {st.session_state.elo_pis_cofins_iss_display}")
     with col_carregamento:
-        st.markdown(f"**CARREGAMENTO (Fixo R$350,00):** {st.session_state.elo_carregamento_display}")
+        st.markdown(f"CARREGAMENTO: {st.session_state.elo_carregamento_display}")
 
     st.markdown("---")
 
-    col_buttons_email, col_buttons_action = st.columns(2)
+    col_buttons_email, col_buttons_action, col1, col2, col3, col4 = st.columns(6)
 
     with col_buttons_email:
         if st.button("Gerar E-mail Armazenagem", key="elo_generate_email_btn", use_container_width=True):

@@ -308,7 +308,7 @@ def show_calculo_fechamento_page():
 
     # Reorganização das colunas para BASE DE CÁLCULO e IMPOSTOS
     # Ajustando a proporção para dar mais espaço, se necessário
-    col1_base_calc, col2_despesas = st.columns([1, 1.5]) # Ajuste de largura das colunas.
+    col1_base_calc, col2_despesas = st.columns([0.6, 0.3]) # Ajuste de largura das colunas.
 
     with col1_base_calc:
         st.markdown("###### BASE DE CÁLCULO")
@@ -389,35 +389,37 @@ def show_calculo_fechamento_page():
 
 
     st.markdown("---")
-    st.markdown("###### Totais Finais")
-    # Usando uma única coluna para Totais Finais para evitar problemas de layout
-    # que podem causar o erro removeChild
-    with st.container(): # Usando um container para agrupar os elementos
-        st.markdown(f"- **Frete Internacional Pago:**")
-        st.text_input(
-            "Frete Internacional Pago",
-            value=st.session_state.fechamento_frete_internacional_pago_input,
-            key="fechamento_frete_internacional_pago_input",
-            on_change=perform_fechamento_calculations,
-            label_visibility="collapsed"
-        )
+    col1, con2 = st.columns(2)
+    with col1:
+        st.markdown("###### Totais Finais")
+        # Usando uma única coluna para Totais Finais para evitar problemas de layout
+        # que podem causar o erro removeChild
+        with st.container(): # Usando um container para agrupar os elementos
+            st.markdown(f"- **Frete Internacional Pago:**")
+            st.text_input(
+                "Frete Internacional Pago",
+                value=st.session_state.fechamento_frete_internacional_pago_input,
+                key="fechamento_frete_internacional_pago_input",
+                on_change=perform_fechamento_calculations,
+                label_visibility="collapsed"
+            )
 
-        st.markdown(f"- **TOTAL MERCADORIA:** {st.session_state.fechamento_total_mercadoria_display}")
-        st.markdown(f"- **TOTAL ADICIONAIS FOB + FRETE + SEGURO + IMPOSTOS + DESPESAS:** {st.session_state.fechamento_total_adicionais_display}")
+            st.markdown(f"- **TOTAL MERCADORIA:** {st.session_state.fechamento_total_mercadoria_display}")
+            st.markdown(f"- **TOTAL ADICIONAIS FOB + FRETE + SEGURO + IMPOSTOS + DESPESAS:** {st.session_state.fechamento_total_adicionais_display}")
+            
+            st.markdown(f"- **TOTAL NFS:** {st.session_state.fechamento_total_nfs_calculado_display}")
+
+            st.markdown(f"- **Valor NFs:**")
+            st.text_input(
+                "Valor NFs",
+                value=st.session_state.fechamento_valor_nfs_input,
+                key="fechamento_valor_nfs_input",
+                on_change=perform_fechamento_calculations,
+                label_visibility="collapsed"
+            )
+
+            st.markdown(f"- **Diferença:** {st.session_state.fechamento_diferenca_final_value}")
         
-        st.markdown(f"- **TOTAL NFS:** {st.session_state.fechamento_total_nfs_calculado_display}")
-
-        st.markdown(f"- **Valor NFs:**")
-        st.text_input(
-            "Valor NFs",
-            value=st.session_state.fechamento_valor_nfs_input,
-            key="fechamento_valor_nfs_input",
-            on_change=perform_fechamento_calculations,
-            label_visibility="collapsed"
-        )
-
-        st.markdown(f"- **Diferença:** {st.session_state.fechamento_diferenca_final_value}")
-    
 
     st.markdown("---")
     if st.button("Voltar para Detalhes da DI", key="fechamento_voltar_di"):

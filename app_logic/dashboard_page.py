@@ -123,10 +123,11 @@ def show_dashboard_page():
                     x=alt.X("Status_Geral", type="nominal", title="Status"),
                     y=alt.Y("Quantidade", type="quantitative", title="Quantidade"),
                     tooltip=["Status_Geral", "Quantidade"],
+                    
                     # MODIFICADO: Legenda para exibir Status e Quantidade
                     color=alt.Color("Status_Geral", legend=alt.Legend(
                         title="Status",
-                        labelExpr="datum.label + ' (' + datum.value + ')'" # Exibe 'Status (Quantidade)'
+                        labelExpr= 'datum.value'   # Exibe 'Status (Quantidade)'
                     ))
                 ).properties(
                     title="Processos por Status"
@@ -139,12 +140,13 @@ def show_dashboard_page():
                     dy=-5 # Ajusta a posição do texto acima da barra
                 ).encode(
                     text=alt.Text("Quantidade"),
-                    color=alt.value("black") # Cor do texto para melhor visibilidade
+                    color=alt.value("white") # Cor do texto para melhor visibilidade
                 )
                 
                 st.altair_chart(chart + text, use_container_width=True)
             else:
                 st.info("Nenhum processo com 'Status_Geral' para exibir.")
+                
 
 
         with col_bar:
@@ -288,3 +290,4 @@ def show_dashboard_page():
     st.markdown("---")
 
     st.write("Esta dashboard oferece uma visão geral dos processos de importação.")
+    

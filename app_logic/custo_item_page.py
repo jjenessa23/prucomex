@@ -1019,7 +1019,7 @@ def show_page():
             'Nº Contrato': [f"Contrato {i+1}" for i in range(10)], 'Dólar': [0.0000] * 10, 'Valor (US$)': [0.00] * 10
         })
     if 'custo_search_ref_input' not in st.session_state:
-        st.session_state.custo_search_ref_input = "PCH-25033"
+        st.session_state.custo_search_ref_input = "PCH-"
     if 'process_totals' not in st.session_state:
         st.session_state.process_totals = {}
     if 'taxes_data' not in st.session_state:
@@ -1054,7 +1054,7 @@ def show_page():
 
 
     st.subheader("Processo")
-    col1_search, col2_search = st.columns([0.2, 0.8])
+    col1_search, col2_search, col3 = st.columns([0.4, 0.2, 0.4])
 
     with col1_search:
         search_ref = st.text_input("Referência do Processo", value=st.session_state.custo_search_ref_input, key="custo_search_ref_input_widget")
@@ -1062,6 +1062,7 @@ def show_page():
 
     with col2_search:
         st.write("") # Espaço para alinhar o botão
+        st.write("")
         if st.button("Pesquisar", key="custo_search_button"):
             declaracao = get_declaracao_by_referencia(search_ref)
             if declaracao:
@@ -1130,6 +1131,7 @@ def show_page():
 
 
                 st.success(f"Dados do processo '{search_ref}' carregados!")
+                
             else:
                 st.session_state.di_data = None
                 st.session_state.itens_data = []
@@ -1181,16 +1183,16 @@ def show_page():
             cols[2].markdown("**Valor (US$)**")
 
             items_to_display = [
-                ("Taxa Cambial", process_totals["Taxa Cambial"], "N/A"),
+                ("Taxa Cambial", process_totals["Taxa Cambial"], "--"),
                 ("VMLE", process_totals["VMLE (R$)"], process_totals["VMLE (US$)"]),
                 ("Frete", process_totals["Frete (R$)"], process_totals["Frete (US$)"]),
                 ("Seguro", process_totals["Seguro (R$)"], process_totals["Seguro (US$)"]),
                 ("VMLD (CIF)", process_totals["VMLD (CIF) (R$)"], process_totals["VMLD (CIF) (US$)"]),
                 ("Acréscimo", process_totals["Acréscimo (R$)"], process_totals["Acréscimo (US$)"]),
-                ("Peso Total (KG)", process_totals["Peso Total (KG)"], "N/A"),
-                ("SISCOMEX", process_totals["SISCOMEX"], "N/A"),
-                ("Despesas Operacionais", process_totals["Despesas Operacionais"], "N/A"),
-                ("Fator Geral", process_totals["Fator Geral"], "N/A")
+                ("Peso Total (KG)", process_totals["Peso Total (KG)"], "--"),
+                ("SISCOMEX", process_totals["SISCOMEX"], "--"),
+                ("Despesas Operacionais", process_totals["Despesas Operacionais"], "--"),
+                ("Fator Geral", process_totals["Fator Geral"], "--")
             ]
             for item, val_brl, val_usd in items_to_display:
                 cols = st.columns(3)
@@ -1390,58 +1392,7 @@ def show_page():
                 else:
                     st.warning("Nenhum Código ERP foi atualizado.")
 
-        with col_buttons_item[2]:
-            pdf_buffer, pdf_filename = _generate_process_report_pdf(st.session_state.di_data, itens_df_calculated, soma_contratos_usd, diferenca_contratos_usd)
-            if pdf_buffer:
-                st.download_button(
-                    label="Imprimir Relatório (PDF)",
-                    data=pdf_buffer,
-                    file_name=pdf_filename,
-                    mime="application/pdf",
-                    key="download_report_pdf"
-                )
-        with col_buttons_item[3]:
-            # Popup para edição da capa
-            with st.expander("Editar Capa para PDF"):
-                st.text_input("Data Desembaraço", value=st.session_state.capa_data_desembaraco_var, key="capa_data_desembaraco_input")
-                st.session_state.capa_data_desembaraco_var = st.session_state.capa_data_desembaraco_input
-
-                st.selectbox("Canal", options=["VERDE", "AMARELO", "VERMELHO", "CINZA"], index=["VERDE", "AMARELO", "VERMELHO", "CINZA"].index(st.session_state.capa_canal_var) if st.session_state.capa_canal_var in ["VERDE", "AMARELO", "VERMELHO", "CINZA"] else 0, key="capa_canal_input")
-                st.session_state.capa_canal_var = st.session_state.capa_canal_input
-
-                st.text_input("Fornecedor", value=st.session_state.capa_fornecedor_var, key="capa_fornecedor_input")
-                st.session_state.capa_fornecedor_var = st.session_state.capa_fornecedor_input
-
-                st.text_area("Produtos", value=st.session_state.capa_produtos_var, key="capa_produtos_input")
-                st.session_state.capa_produtos_var = st.session_state.capa_produtos_input
-
-                st.selectbox("Modal", options=["", "AEREO", "MARITIMO"], index=["", "AEREO", "MARITIMO"].index(st.session_state.capa_modal_var) if st.session_state.capa_modal_var in ["", "AEREO", "MARITIMO"] else 0, key="capa_modal_input")
-                st.session_state.capa_modal_var = st.session_state.capa_modal_input
-
-                if st.session_state.capa_modal_var == "MARITIMO":
-                    st.text_input("Quantidade de Containers", value=st.session_state.capa_quantidade_containers_var, key="capa_containers_input")
-                    st.session_state.capa_quantidade_containers_var = st.session_state.capa_containers_input
-                else:
-                    st.session_state.capa_quantidade_containers_var = "0" # Reset if not maritime
-
-                st.selectbox("Incoterm", options=["", "EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"], index=["", "EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"].index(st.session_state.capa_incoterm_var) if st.session_state.capa_incoterm_var in ["", "EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"] else 0, key="capa_incoterm_input")
-                st.session_state.capa_incoterm_var = st.session_state.capa_incoterm_input
-
-                st.text_input("Transportadora", value=st.session_state.capa_transportadora_var, key="capa_transportadora_input")
-                st.session_state.capa_transportadora_var = st.session_state.capa_transportadora_input
-
-                st.text_input("NF Entrada", value=st.session_state.capa_nf_entrada_var, key="capa_nf_entrada_input")
-                st.session_state.capa_nf_entrada_var = st.session_state.capa_nf_entrada_input
-
-                pdf_cover_buffer, pdf_cover_filename = _generate_cover_pdf(st.session_state.di_data, st.session_state.total_para_nf, st.session_state.process_totals, st.session_state.contracts_df)
-                if pdf_cover_buffer:
-                    st.download_button(
-                        label="Gerar Capa PDF",
-                        data=pdf_cover_buffer,
-                        file_name=pdf_cover_filename,
-                        mime="application/pdf",
-                        key="download_cover_pdf"
-                    )
+        
 
         st.markdown("---")
 
@@ -1454,7 +1405,7 @@ def show_page():
             column_config={
                 "Código ERP": st.column_config.TextColumn("Código ERP", width="small"),
                 "NCM": st.column_config.TextColumn("NCM", width="small"),
-                "SKU": st.column_config.TextColumn("SKU", width="small"),
+                "SKU": st.column_config.TextColumn("SKU", width="medium"),
                 "Descrição": st.column_config.TextColumn("Descrição", width="large"),
                 "Quantidade": st.column_config.NumberColumn("Quantidade", format="%.0f", width="small"), # Formato para inteiro
                 "Peso Unitário": st.column_config.TextColumn("Peso Unitário", width="small"),
@@ -1482,4 +1433,57 @@ def show_page():
                 "Fator por Adição": st.column_config.TextColumn("Fator por Adição", width="small"),
             }
         )
-        st.info("A edição de 'Código ERP' diretamente na tabela não é nativa do `st.dataframe` para todas as colunas. Para isso, seria necessário um `st.data_editor` com a coluna configurada como editável, ou um pop-up de edição separado, como no Tkinter.")
+        col_buttons_relatorio = st.columns(2)
+        with col_buttons_relatorio[0]:
+            
+            with st.expander("Editar Capa para PDF"):
+                    st.text_input("Data Desembaraço", value=st.session_state.capa_data_desembaraco_var, key="capa_data_desembaraco_input")
+                    st.session_state.capa_data_desembaraco_var = st.session_state.capa_data_desembaraco_input
+
+                    st.selectbox("Canal", options=["VERDE", "AMARELO", "VERMELHO", "CINZA"], index=["VERDE", "AMARELO", "VERMELHO", "CINZA"].index(st.session_state.capa_canal_var) if st.session_state.capa_canal_var in ["VERDE", "AMARELO", "VERMELHO", "CINZA"] else 0, key="capa_canal_input")
+                    st.session_state.capa_canal_var = st.session_state.capa_canal_input
+
+                    st.text_input("Fornecedor", value=st.session_state.capa_fornecedor_var, key="capa_fornecedor_input")
+                    st.session_state.capa_fornecedor_var = st.session_state.capa_fornecedor_input
+
+                    st.text_area("Produtos", value=st.session_state.capa_produtos_var, key="capa_produtos_input")
+                    st.session_state.capa_produtos_var = st.session_state.capa_produtos_input
+
+                    st.selectbox("Modal", options=["", "AEREO", "MARITIMO"], index=["", "AEREO", "MARITIMO"].index(st.session_state.capa_modal_var) if st.session_state.capa_modal_var in ["", "AEREO", "MARITIMO"] else 0, key="capa_modal_input")
+                    st.session_state.capa_modal_var = st.session_state.capa_modal_input
+
+                    if st.session_state.capa_modal_var == "MARITIMO":
+                        st.text_input("Quantidade de Containers", value=st.session_state.capa_quantidade_containers_var, key="capa_containers_input")
+                        st.session_state.capa_quantidade_containers_var = st.session_state.capa_containers_input
+                    else:
+                        st.session_state.capa_quantidade_containers_var = "0" # Reset if not maritime
+
+                    st.selectbox("Incoterm", options=["", "EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"], index=["", "EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"].index(st.session_state.capa_incoterm_var) if st.session_state.capa_incoterm_var in ["", "EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"] else 0, key="capa_incoterm_input")
+                    st.session_state.capa_incoterm_var = st.session_state.capa_incoterm_input
+
+                    st.text_input("Transportadora", value=st.session_state.capa_transportadora_var, key="capa_transportadora_input")
+                    st.session_state.capa_transportadora_var = st.session_state.capa_transportadora_input
+
+                    st.text_input("NF Entrada", value=st.session_state.capa_nf_entrada_var, key="capa_nf_entrada_input")
+                    st.session_state.capa_nf_entrada_var = st.session_state.capa_nf_entrada_input
+
+                    pdf_cover_buffer, pdf_cover_filename = _generate_cover_pdf(st.session_state.di_data, st.session_state.total_para_nf, st.session_state.process_totals, st.session_state.contracts_df)
+                    if pdf_cover_buffer:
+                        st.download_button(
+                            label="Gerar Capa PDF",
+                            data=pdf_cover_buffer,
+                            file_name=pdf_cover_filename,
+                            mime="application/pdf",
+                            key="download_cover_pdf"
+                        )
+            pdf_buffer, pdf_filename = _generate_process_report_pdf(st.session_state.di_data, itens_df_calculated, soma_contratos_usd, diferenca_contratos_usd)
+            if pdf_buffer:
+                st.download_button(
+                    label="Imprimir Relatório (PDF)",
+                    data=pdf_buffer,
+                    file_name=pdf_filename,
+                    mime="application/pdf",
+                    key="download_report_pdf"
+                )
+            
+        st.markdown("---")        # Popup para edição da capa            
