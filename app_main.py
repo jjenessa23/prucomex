@@ -5,9 +5,11 @@ import logging
 import sqlite3
 import hashlib
 import base64
+from datetime import datetime
+import requests # Adicionado para fazer requisições HTTP
 
 # Importar funções de utilidade do novo módulo
-from app_logic.utils import set_background_image, set_sidebar_background_image
+from app_logic.utils import set_background_image, set_sidebar_background_image, get_dolar_cotacao
 
 st.set_page_config(layout="wide", page_title="Gerenciamento COMEX")
 
@@ -247,12 +249,14 @@ from app_logic import followup_importacao_page
 from app_logic import user_management_page
 from app_logic import dashboard_page
 from app_logic import notification_page
+# NOVO: Importar a nova página de Frete Internacional
+from app_logic import calculo_frete_internacional_page
 
-# NOVO: Importar as novas páginas de cálculo
+# Importar as novas páginas de cálculo
 from app_logic import calculo_futura_page
 from app_logic import calculo_paclog_elo_page
 from app_logic import calculo_fechamento_page
-from app_logic import calculo_fn_transportes_page # Importa a nova página FN Transportes
+from app_logic import calculo_fn_transportes_page
 
 
 # Configuração de logging (simplificada para Streamlit)
@@ -317,11 +321,13 @@ PAGES = {
     "Importar XML DI": analise_xml_di_page.show_page,
     "Pagamentos": detalhes_di_calculos_page.show_page,
     "Custo do Processo": custo_item_page.show_page,
-    "Cálculo Portonave": calculo_portonave_page.show_page,
+    "Cálculo Portonave": calculo_portonave_page.show_page, # Mantido show_page conforme o original
     "Cálculo Futura": calculo_futura_page.show_calculo_futura_page,
     "Cálculo Pac Log - Elo": calculo_paclog_elo_page.show_calculo_paclog_elo_page,
     "Cálculo Fechamento": calculo_fechamento_page.show_calculo_fechamento_page,
-    "Cálculo FN Transportes": calculo_fn_transportes_page.show_calculo_fn_transportes_page, # NOVO: Adicionado FN Transportes
+    "Cálculo FN Transportes": calculo_fn_transportes_page.show_calculo_fn_transportes_page,
+    # NOVO: Adicionado Cálculo Frete Internacional
+    "Cálculo Frete Internacional": calculo_frete_internacional_page.show_calculo_frete_internacional_page, 
     "Análise de Documentos": None,
     "Pagamentos Container": None,
     "Cálculo de Tributos TTCE": None,
@@ -452,14 +458,15 @@ else:
     st.sidebar.subheader("Registros")
     if st.sidebar.button("Importar XML DI", key="menu_xml_di", use_container_width=True):
         navigate_to("Importar XML DI")
-    if st.sidebar.button("Pagamentos", key="menu_pagamentos", use_container_width=True):
+    if st.sidebar.button("Cálculos para Pagamentos", key="menu_pagamentos", use_container_width=True):
         navigate_to("Pagamentos")
     if st.sidebar.button("Custo do Processo", key="menu_custo_processo", use_container_width=True):
         navigate_to("Custo do Processo")
-    # Menu "Cálculos"
-    st.sidebar.subheader("Cálculos")
-    if st.sidebar.button("Cálculo Portonave", key="menu_calculo_portonave", use_container_width=True):
-        navigate_to("Cálculo Portonave")
+    
+    
+    # NOVO: Botão para Cálculo Frete Internacional
+    if st.sidebar.button("Cálculo Frete Internacional", key="menu_frete_internacional", use_container_width=True):
+        navigate_to("Cálculo Frete Internacional")
     # Menu "Telas em desenvolvimento"
     st.sidebar.subheader("Telas em desenvolvimento")
     if st.sidebar.button("Análise de Documentos", key="menu_analise_documentos", use_container_width=True):
@@ -495,8 +502,6 @@ else:
     # --- Conteúdo Principal (Baseado na Página Selecionada) ---
     st.markdown("---")
 
-    # Contêiner principal para todo o conteúdo da página
-    # Isso garante que o conteúdo de uma página substitua o da anterior
     with st.container():
         if st.session_state.current_page == "Home":
             # Configuração da Imagem de Fundo para a página Home (pós-login)
@@ -506,6 +511,24 @@ else:
             st.header("Bem-vindo ao Gerenciamento COMEX")
             st.write("Use o menu lateral para navegar.")
             
+            st.subheader("Cotação do Dólar (USD) - Hoje")
+            dolar_data = get_dolar_cotacao() # Agora importado de app_logic.utils
+            
+            if dolar_data:
+                col1, col2, col3, col4, col5, col6 = st.columns(6) # Usamos 2 colunas para exibir Abertura e PTAX
+                
+                with col1:
+                    st.metric(label="Dólar Abertura Compra 💸", value=dolar_data['abertura_compra'])
+                    st.metric(label="Dólar Abertura Venda 💸", value=dolar_data['abertura_venda'])
+                
+                with col2:
+                    st.metric(label="Dólar PTAX Compra 🪙", value=dolar_data['ptax_compra'])
+                    st.metric(label="Dólar PTAX Venda 🪙", value=dolar_data['ptax_venda'])
+            else:
+                st.warning("Não foi possível carregar a cotação do dólar. Verifique sua conexão ou tente mais tarde.")
+            
+            st.markdown("---") # Separador visual
+
             # Central de Notificações
             notification_page.display_notifications_on_home(st.session_state.get('user_info', {}).get('username'))
             st.markdown("---")
