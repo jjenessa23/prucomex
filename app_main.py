@@ -251,6 +251,13 @@ from app_logic import dashboard_page
 from app_logic import notification_page
 # NOVO: Importar a nova página de Frete Internacional
 from app_logic import calculo_frete_internacional_page
+# IMPORTANTE: Importar a nova página de análise de PDF
+from app_logic import pdf_analyzer_page
+# NOVO: Importar a nova página de listagem NCM
+from app_logic import ncm_list_page
+# NOVO: Importar a nova página de formulário de processo
+from app_logic import process_form_page
+
 
 # Importar as novas páginas de cálculo
 from app_logic import calculo_futura_page
@@ -271,37 +278,34 @@ def authenticate_user(username, password):
     return db_utils.verify_credentials(username, password)
 
 # --- Inicialização do Banco de Dados ---
-# Garante que as tabelas existam ao iniciar o aplicativo
-# Estas mensagens de debug serão movidas para serem exibidas condicionalmente após o login
-# if 'db_initialized' not in st.session_state:
-#     st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
-#     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-#     if not os.path.exists(data_dir):
-#         try:
-#             os.makedirs(data_dir)
-#             logger.info(f"Diretório de dados '{data_dir}' criado.")
-#             st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
-#         except OSError as e:
-#             logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
-#             st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
-#             st.session_state.db_initialized = False
-#             st.stop()
-#     else:
-#         st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
+if 'db_initialized' not in st.session_state:
+    st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    if not os.path.exists(data_dir):
+        try:
+            os.makedirs(data_dir)
+            logger.info(f"Diretório de dados '{data_dir}' criado.")
+            st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
+        except OSError as e:
+            logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
+            st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
+            st.session_state.db_initialized = False
+            st.stop()
+    else:
+        st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
 
-#     st.info("DEBUG: Chamando db_utils.create_tables()...")
-#     tables_created_general = db_utils.create_tables()
-#     st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
+    st.info("DEBUG: Chamando db_utils.create_tables()...")
+    tables_created_general = db_utils.create_tables()
+    st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
 
-#     tables_created_user = True
-#     if tables_created_general and tables_created_user:
-#         st.session_state.db_initialized = True
-#         logger.info("Bancos de dados e tabelas inicializados com sucesso.")
-#         st.success("DEBUG: Bancos de dados e tabelas inicializados com sucesso.")
-#     else:
-#         st.session_state.db_initialized = False
-#         logger.error("Falha ao inicializar bancos de dados e tabelas.")
-#         st.error("ERRO CRÍTICO: Falha ao inicializar bancos de dados e tabelas. Verifique os logs.")
+    if tables_created_general:
+        st.session_state.db_initialized = True
+        logger.info("Bancos de dados e tabelas inicializados com sucesso.")
+        st.success("DEBUG: Bancos de dados e tabelas inicializados com sucesso.")
+    else:
+        st.session_state.db_initialized = False
+        logger.error("Falha ao inicializar bancos de dados e tabelas.")
+        st.error("ERRO CRÍTICO: Falha ao inicializar bancos de dados e tabelas. Verifique os logs.")
 
 # --- Estado da Sessão ---
 if 'authenticated' not in st.session_state:
@@ -316,23 +320,24 @@ PAGES = {
     "Home": None,
     "Dashboard": dashboard_page.show_dashboard_page,
     "Descrições": descricoes_page.show_page,
-    "Listagem NCM": None,
-    "Follow-up Importação": followup_importacao_page.show_page,
+    "Listagem NCM": ncm_list_page.show_ncm_list_page,
+    "Follow-up Importação": followup_importacao_page.show_page, # Aponta para a página principal de listagem
     "Importar XML DI": analise_xml_di_page.show_page,
     "Pagamentos": detalhes_di_calculos_page.show_page,
     "Custo do Processo": custo_item_page.show_page,
-    "Cálculo Portonave": calculo_portonave_page.show_page, # Mantido show_page conforme o original
+    "Cálculo Portonave": calculo_portonave_page.show_page,
     "Cálculo Futura": calculo_futura_page.show_calculo_futura_page,
     "Cálculo Pac Log - Elo": calculo_paclog_elo_page.show_calculo_paclog_elo_page,
     "Cálculo Fechamento": calculo_fechamento_page.show_calculo_fechamento_page,
     "Cálculo FN Transportes": calculo_fn_transportes_page.show_calculo_fn_transportes_page,
-    # NOVO: Adicionado Cálculo Frete Internacional
     "Cálculo Frete Internacional": calculo_frete_internacional_page.show_calculo_frete_internacional_page, 
+    "Análise de Faturas/PL (PDF)": pdf_analyzer_page.show_pdf_analyzer_page,
     "Análise de Documentos": None,
     "Pagamentos Container": None,
     "Cálculo de Tributos TTCE": None,
     "Gerenciamento de Usuários": user_management_page.show_page,
     "Gerenciar Notificações": notification_page.show_admin_notification_page,
+    "Formulário Processo": process_form_page.show_process_form_page, # Nova página dedicada para o formulário
 }
 
 # --- Tela de Login ---
@@ -362,7 +367,6 @@ if not st.session_state.authenticated:
                 st.session_state.authenticated = True
                 st.session_state.user_info = user_info
                 st.success(f"Bem-vindo, {user_info['username']}!")
-                # Mover mensagens de debug de DB para depois do login
                 if 'db_initialized' not in st.session_state:
                     st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
                     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -415,12 +419,13 @@ else:
     else:
         pass 
 
-    num_notifications = notification_page.get_notification_count_for_user(st.session_state.get('user_info', {}).get('username'))
+    current_username = st.session_state.get('user_info', {}).get('username', 'Convidado')
+    num_notifications = notification_page.get_notification_count_for_user(current_username)
 
     st.sidebar.markdown(f"""
         <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px; margin-bottom: 10px;">
             <div style="display: flex; align-items: center;">
-                <span style="font-size: 1rem; font-weight: bold; color: gray;">Usuário: {st.session_state.user_info['username']}</span>
+                <span style="font-size: 1rem; font-weight: bold; color: gray;">Usuário: {current_username}</span>
             </div>
             <div style="display: flex; align-items: center; cursor: pointer;">
                 <i class="fa-solid fa-bell" style="font-size: 1.2rem; color: yellow; margin-right: 5px;"></i>
@@ -430,13 +435,14 @@ else:
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     """, unsafe_allow_html=True)
 
-    # --- Configuração da Imagem de Fundo para a Sidebar ---
     sidebar_background_image_path = os.path.join(os.path.dirname(__file__), 'assets', 'logo_navio_atracado.png')
-    set_sidebar_background_image(sidebar_background_image_path, opacity=0.6) # Ajustado para opacidade 0.0
-    # --- Fim da Configuração da Imagem de Fundo da Sidebar ---
+    set_sidebar_background_image(sidebar_background_image_path, opacity=0.6)
 
-    def navigate_to(page_name):
+    def navigate_to(page_name, **kwargs):
         st.session_state.current_page = page_name
+        # Passar argumentos extras para a próxima página através do session_state
+        for key, value in kwargs.items():
+            st.session_state[key] = value
         st.rerun()
 
     # Menu "Início"
@@ -467,6 +473,10 @@ else:
     # NOVO: Botão para Cálculo Frete Internacional
     if st.sidebar.button("Cálculo Frete Internacional", key="menu_frete_internacional", use_container_width=True):
         navigate_to("Cálculo Frete Internacional")
+    # IMPORTANTE: Botão para a nova página de Análise de Faturas/PL (PDF)
+    if st.sidebar.button("Análise de Faturas/PL (PDF)", key="menu_pdf_analyzer", use_container_width=True):
+        navigate_to("Análise de Faturas/PL (PDF)")
+
     # Menu "Telas em desenvolvimento"
     st.sidebar.subheader("Telas em desenvolvimento")
     if st.sidebar.button("Análise de Documentos", key="menu_analise_documentos", use_container_width=True):
@@ -477,7 +487,7 @@ else:
         navigate_to("Cálculo de Tributos TTCE")
 
     # Menu "Administrador" (visível apenas para admin)
-    if st.session_state.user_info and st.session_state.user_info['is_admin']:
+    if st.session_state.user_info and st.session_state.user_info.get('is_admin'):
         st.sidebar.subheader("Administrador")
         if st.sidebar.button("Gerenciamento de Usuários", key="menu_user_management", use_container_width=True):
             navigate_to("Gerenciamento de Usuários")
@@ -504,18 +514,17 @@ else:
 
     with st.container():
         if st.session_state.current_page == "Home":
-            # Configuração da Imagem de Fundo para a página Home (pós-login)
             background_image_path = os.path.join(os.path.dirname(__file__), 'assets', 'logo_navio_atracado.png')
-            set_background_image(background_image_path, opacity=0.5) # Ajustado para opacidade 0.0
+            set_background_image(background_image_path, opacity=0.5)
 
             st.header("Bem-vindo ao Gerenciamento COMEX")
             st.write("Use o menu lateral para navegar.")
             
             st.subheader("Cotação do Dólar (USD) - Hoje")
-            dolar_data = get_dolar_cotacao() # Agora importado de app_logic.utils
+            dolar_data = get_dolar_cotacao()
             
             if dolar_data:
-                col1, col2, col3, col4, col5, col6 = st.columns(6) # Usamos 2 colunas para exibir Abertura e PTAX
+                col1, col2, col3, col4, col5, col6 = st.columns(6)
                 
                 with col1:
                     st.metric(label="Dólar Abertura Compra 💸", value=dolar_data['abertura_compra'])
@@ -527,15 +536,15 @@ else:
             else:
                 st.warning("Não foi possível carregar a cotação do dólar. Verifique sua conexão ou tente mais tarde.")
             
-            st.markdown("---") # Separador visual
+            st.markdown("---")
 
-            # Central de Notificações
-            notification_page.display_notifications_on_home(st.session_state.get('user_info', {}).get('username'))
+            current_username = st.session_state.get('user_info', {}).get('username', 'Desconhecido')
+            notification_page.display_notifications_on_home(current_username)
             st.markdown("---")
             
             st.write(f"Versão da Aplicação: {st.session_state.get('app_version', '2.0.1')}")
             st.write("Status dos Bancos de Dados:")
-            if st.session_state.get('db_initialized', False): # Verifica se já foi inicializado
+            if st.session_state.get('db_initialized', False):
                 st.success("- Bancos de dados inicializados e conectados.")
             else:
                 st.error("- Falha na conexão/inicialização dos bancos de dados.")
@@ -543,14 +552,20 @@ else:
             st.info("DEBUG: Módulo 'db_utils' real importado com sucesso.")
 
         elif st.session_state.current_page == "Dashboard":
-            # Renderiza o Dashboard
-            dashboard_page.show_dashboard_page() # Chamando a função do módulo dashboard_page
+            dashboard_page.show_dashboard_page()
 
         elif st.session_state.current_page in PAGES and PAGES[st.session_state.current_page] is not None:
-            # Para outras páginas, simplesmente renderiza o conteúdo
-            if st.session_state.current_page in ["Listagem NCM", "Análise de Documentos", "Pagamentos Container", "Cálculo de Tributos TTCE"]:
+            if st.session_state.current_page in ["Análise de Documentos", "Pagamentos Container", "Cálculo de Tributos TTCE"]:
                 st.warning(f"Tela de {st.session_state.current_page} (em desenvolvimento)")
             
-            PAGES[st.session_state.current_page]()
+            # Se a página atual é "Formulário Processo", chame-a com os dados do session_state
+            if st.session_state.current_page == "Formulário Processo":
+                process_form_page.show_process_form_page(
+                    st.session_state.get('form_process_identifier'),
+                    st.session_state.get('form_reload_processes_callback')
+                )
+            else:
+                PAGES[st.session_state.current_page]()
         else:
             st.info(f"Página '{st.session_state.current_page}' em desenvolvimento ou não encontrada.")
+

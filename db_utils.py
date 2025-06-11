@@ -20,6 +20,8 @@ _PRODUTOS_DB_FILENAME = "banco_de_dados_descricao.db"
 _NCM_DB_FILENAME = "banco_de_dados_ncm_draft_BL.db"
 _PAGAMENTOS_DB_FILENAME = "pagamentos_container.db"
 _FOLLOWUP_DB_FILENAME = "followup_importacao.db"
+# NOVO: Nome do arquivo do banco de dados para itens NCM e impostos
+_NCM_IMPOSTOS_DB_FILENAME = "ncm_impostos.db"
 
 
 _base_path = os.path.dirname(os.path.abspath(__file__))
@@ -32,11 +34,13 @@ _DB_PATHS = {
     "ncm": os.path.join(_app_root_path, _DEFAULT_DB_FOLDER, _NCM_DB_FILENAME),
     "pagamentos": os.path.join(_app_root_path, _DEFAULT_DB_FOLDER, _PAGAMENTOS_DB_FILENAME),
     "followup": os.path.join(_app_root_path, _DEFAULT_DB_FOLDER, _FOLLOWUP_DB_FILENAME),
+    # NOVO: Adiciona o caminho para o novo banco de dados de NCM e impostos
+    "ncm_impostos": os.path.join(_app_root_path, _DEFAULT_DB_FOLDER, _NCM_IMPOSTOS_DB_FILENAME),
 }
 
 
 def get_db_path(db_type: str):
-    """Returns the appropriate database path for a given type."""
+    """Retorna o caminho apropriado do banco de dados para um dado tipo."""
     return _DB_PATHS.get(db_type)
 
 def connect_db(db_path: str):
@@ -54,11 +58,11 @@ def connect_db(db_path: str):
         return None
 
 def hash_password(password: str, username: str) -> str:
-    """Hashes a password with a username as salt."""
+    """Hash da senha com o username como sal."""
     password_salted = password + username
     return hashlib.sha256(password_salted.encode('utf-8')).hexdigest()
 
-def criar_tabela_users(conn):
+def criar_tabela_users(conn: sqlite3.Connection):
     """Cria a tabela 'users' se não existir e adiciona a coluna allowed_screens."""
     try:
         cursor = conn.cursor()
@@ -93,7 +97,7 @@ def criar_tabela_users(conn):
              admin_username = "admin"
              admin_password_hash = hash_password("admin", admin_username)
              logger.debug(f"Hash da senha admin padrão gerado: {admin_password_hash}")
-             all_screens_default = "Home,Descrições,Listagem NCM,Follow-up Importação,Importar XML DI,Pagamentos,Custo do Processo,Cálculo Portonave,Análise de Documentos,Pagamentos Container,Cálculo de Tributos TTCE,Gerenciamento de Usuários"
+             all_screens_default = "Home,Descrições,Listagem NCM,Follow-up Importação,Importar XML DI,Pagamentos,Custo do Processo,Cálculo Portonave,Análise de Documentos,Pagamentos Container,Cálculo de Tributos TTCE,Gerenciamento de Usuários,Cálculo Frete Internacional,Análise de Faturas/PL (PDF),Cálculo Futura,Cálculo Pac Log - Elo,Cálculo Fechamento,Cálculo FN Transportes" # Adicionado as novas páginas
              try:
                   cursor.execute("INSERT INTO users (username, password_hash, is_admin, allowed_screens) VALUES (?, ?, ?, ?)",
                                  (admin_username, admin_password_hash, 1, all_screens_default))
@@ -108,6 +112,30 @@ def criar_tabela_users(conn):
         return True
     except Exception as e:
         logger.exception("Erro ao criar ou atualizar a tabela 'users'")
+        conn.rollback()
+        return False
+
+def criar_tabela_ncm_impostos(conn: sqlite3.Connection):
+    """Cria a tabela 'ncm_impostos_items' se não existir."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ncm_impostos_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ncm_code TEXT UNIQUE NOT NULL,
+                descricao_item TEXT NOT NULL,
+                ii_aliquota REAL,
+                ipi_aliquota REAL,
+                pis_aliquota REAL,
+                cofins_aliquota REAL,
+                icms_aliquota REAL
+            )
+        ''')
+        conn.commit()
+        logger.info("Tabela 'ncm_impostos_items' verificada/criada com sucesso.")
+        return True
+    except Exception as e:
+        logger.exception("Erro ao criar ou atualizar a tabela 'ncm_impostos_items'")
         conn.rollback()
         return False
 
@@ -133,6 +161,23 @@ def create_tables():
             success = False
         finally:
             if conn_users: conn_users.close()
+    else:
+        success = False
+
+    # NOVO: Conecta e cria a tabela ncm_impostos_items
+    conn_ncm_impostos = connect_db(get_db_path("ncm_impostos"))
+    if conn_ncm_impostos:
+        try:
+            if not criar_tabela_ncm_impostos(conn_ncm_impostos):
+                success = False
+            conn_ncm_impostos.close()
+            logger.info("Tabela NCM_Impostos verificada/criada.")
+        except Exception as e:
+            logger.error(f"Erro ao criar tabela NCM_Impostos: {e}")
+            if conn_ncm_impostos: conn_ncm_impostos.rollback()
+            success = False
+        finally:
+            if conn_ncm_impostos: conn_ncm_impostos.close()
     else:
         success = False
 
@@ -438,12 +483,18 @@ def get_declaracao_by_id(declaracao_id: int):
         if conn: conn.close()
     return None
 
-def get_declaracao_by_referencia(referencia: str):
+# Renomeado de get_declaracao_by_process_number para get_declaracao_by_referencia
+def get_declaracao_by_referencia(referencia: str) -> Optional[sqlite3.Row]:
+    """
+    Busca uma declaração de importação pela referência (informacao_complementar).
+    Retorna uma sqlite3.Row se encontrada, ou None.
+    """
     conn = connect_db(get_db_path("xml_di"))
     if not conn: return None
     try:
         cursor = conn.cursor()
-        # MODIFICADO: Usar UPPER(TRIM(informacao_complementar)) para busca insensível a maiúsculas/minúsculas e espaços
+        # Padroniza a referência de entrada para comparação (maiúsculas e sem espaços extras)
+        query_val = referencia.strip().upper() 
         cursor.execute("""
             SELECT id, numero_di, data_registro, valor_total_reais_xml, arquivo_origem, data_importacao,
                    informacao_complementar, vmle, frete, seguro, vmld, ipi, pis_pasep, cofins, icms_sc,
@@ -451,13 +502,14 @@ def get_declaracao_by_referencia(referencia: str):
                    cnpj_importador, importador_nome, recinto, embalagem, quantidade_volumes, acrescimo,
                    imposto_importacao, armazenagem, frete_nacional
             FROM xml_declaracoes WHERE UPPER(TRIM(informacao_complementar)) = ?
-        """, (referencia,)) # A referência de entrada já deve estar em maiúsculas e sem espaços extras
+        """, (query_val,))
         return cursor.fetchone()
     except Exception as e:
         logger.error(f"Erro DB ao buscar declaração por referência '{referencia}': {e}")
     finally:
         if conn: conn.close()
     return None
+
 
 def get_itens_by_declaracao_id(declaracao_id: int):
     conn = connect_db(get_db_path("xml_di"))
@@ -966,5 +1018,92 @@ def deletar_produto(db_path: str, id_key_erp: str):
         logger.error(f"Erro ao excluir produto com ID/Key ERP '{id_key_erp}': {e}")
         conn.rollback()
         return False
+    finally:
+        if conn: conn.close()
+
+# Funções para o novo banco de NCM e impostos
+def adicionar_ou_atualizar_ncm_item(ncm_code: str, descricao_item: str, ii_aliquota: float, ipi_aliquota: float, pis_aliquota: float, cofins_aliquota: float, icms_aliquota: float):
+    """
+    Adiciona um novo item NCM com seus impostos ou atualiza um existente.
+    """
+    conn = connect_db(get_db_path("ncm_impostos"))
+    if not conn: return False
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT ncm_code FROM ncm_impostos_items WHERE ncm_code = ?", (ncm_code,))
+        if cursor.fetchone():
+            cursor.execute('''
+                UPDATE ncm_impostos_items
+                SET descricao_item = ?, ii_aliquota = ?, ipi_aliquota = ?, pis_aliquota = ?, cofins_aliquota = ?, icms_aliquota = ?
+                WHERE ncm_code = ?
+            ''', (descricao_item, ii_aliquota, ipi_aliquota, pis_aliquota, cofins_aliquota, icms_aliquota, ncm_code))
+            logger.info(f"Item NCM '{ncm_code}' atualizado com sucesso.")
+        else:
+            cursor.execute('''
+                INSERT INTO ncm_impostos_items (ncm_code, descricao_item, ii_aliquota, ipi_aliquota, pis_aliquota, cofins_aliquota, icms_aliquota)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (ncm_code, descricao_item, ii_aliquota, ipi_aliquota, pis_aliquota, cofins_aliquota, icms_aliquota))
+            logger.info(f"Novo item NCM '{ncm_code}' inserido com sucesso.")
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao inserir/atualizar item NCM '{ncm_code}': {e}")
+        conn.rollback()
+        return False
+    finally:
+        if conn: conn.close()
+
+def selecionar_todos_ncm_itens():
+    """
+    Seleciona todos os itens NCM do banco de dados.
+    """
+    conn = connect_db(get_db_path("ncm_impostos"))
+    if not conn: return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, ncm_code, descricao_item, ii_aliquota, ipi_aliquota, pis_aliquota, cofins_aliquota, icms_aliquota FROM ncm_impostos_items ORDER BY ncm_code ASC")
+        return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"Erro ao buscar todos os itens NCM: {e}")
+        return []
+    finally:
+        if conn: conn.close()
+
+def deletar_ncm_item(ncm_id: int):
+    """
+    Deleta um item NCM do banco de dados pelo seu ID.
+    """
+    conn = connect_db(get_db_path("ncm_impostos"))
+    if not conn: return False
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ncm_impostos_items WHERE id = ?", (ncm_id,))
+        conn.commit()
+        if cursor.rowcount > 0:
+            logger.info(f"Item NCM com ID '{ncm_id}' excluído com sucesso.")
+            return True
+        else:
+            logger.warning(f"Item NCM com ID '{ncm_id}' não encontrado para exclusão.")
+            return False
+    except Exception as e:
+        logger.error(f"Erro ao excluir item NCM com ID '{ncm_id}': {e}")
+        conn.rollback()
+        return False
+    finally:
+        if conn: conn.close()
+
+def get_ncm_item_by_ncm_code(ncm_code: str):
+    """
+    Busca um item NCM pelo seu código NCM.
+    """
+    conn = connect_db(get_db_path("ncm_impostos"))
+    if not conn: return None
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, ncm_code, descricao_item, ii_aliquota, ipi_aliquota, pis_aliquota, cofins_aliquota, icms_aliquota FROM ncm_impostos_items WHERE ncm_code = ?", (ncm_code,))
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"Erro ao buscar item NCM com código '{ncm_code}': {e}")
+        return None
     finally:
         if conn: conn.close()

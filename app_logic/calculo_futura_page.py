@@ -352,7 +352,7 @@ def show_calculo_futura_page():
             with c2_imp: st.markdown(f"**{st.session_state.futura_taxa_siscomex_display}**")
 
             c1_imp, c2_imp = st.columns([0.7, 0.3])
-            with c1_imp: st.markdown("- ICMS-SC (se houver):")
+            with c1_imp: st.markdown("- ICMS-SC :")
             with c2_imp: st.markdown(f"**{st.session_state.futura_icms_sc_display}**")
 
             st.markdown("---")
@@ -425,7 +425,7 @@ def show_calculo_futura_page():
     if st.session_state.futura_tipo_transporte == "Marítimo":
         st.markdown("---")
         st.markdown("###### Cálculo AFRMM")
-        col_afrmm_input, col_afrmm_display = st.columns(2)
+        col_afrmm_input, col_btn ,col_afrmm_display = st.columns(3) # Três colunas para inputs, botões e exibição
         with col_afrmm_input:
             # Campos editáveis que permanecem inputs
             capatazias_afrmm_input = st.text_input(
@@ -434,6 +434,8 @@ def show_calculo_futura_page():
                 key="futura_capatazias_afrmm_input",
                 on_change=perform_futura_calculations # Recalcula ao alterar
             )
+            
+
             st.session_state.futura_capatazias_afrmm_value = capatazias_afrmm_input
 
             tarifa_afrmm_input = st.text_input(
@@ -443,7 +445,16 @@ def show_calculo_futura_page():
                 on_change=perform_futura_calculations # Recalcula ao alterar
             )
             st.session_state.futura_tarifa_afrmm_value = tarifa_afrmm_input
+            
+            if st.button("Recalcular AFRMM", key="futura_recalcular_afrmm_btn", on_click=st.rerun, use_container_width=True):
+                try:
+                    # Recalcula os valores com os inputs atualizados
+                    perform_futura_calculations()
+                    st.rerun()  # Força a atualização da tela
+                except Exception as e:
+                    st.error(f"Erro ao recalcular AFRMM: {e}")
 
+        # Exibição dos resultados do cálculo AFRMM
         with col_afrmm_display:
             # Frete DI (Reais) - Agora apenas exibição
             c1_afrmm, c2_afrmm = st.columns([0.7, 0.3])
@@ -457,7 +468,7 @@ def show_calculo_futura_page():
 
             # Taxa PTAX - Já era exibição
             c1_afrmm, c2_afrmm = st.columns([0.7, 0.3])
-            with c1_afrmm: st.markdown("- Taxa PTAX:")
+            with c1_afrmm: st.markdown("- Taxa PTAX: (USD)")
             with c2_afrmm: st.markdown(f"**{st.session_state.futura_taxa_ptax_display}**")
 
             # Taxa do Mercante - Já era exibição

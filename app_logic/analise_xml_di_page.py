@@ -66,17 +66,34 @@ def _format_di_number(di_number):
     return di_number
 
 def _format_currency(value):
+    """Formata um valor numérico para moeda BRL (R$)."""
     try:
         val = float(value)
         return f"R$ {val:,.2f}".replace('.', '#').replace(',', '.').replace('#', ',')
     except (ValueError, TypeError):
         return "R$ 0,00"
 
+def _format_currency_usd(value):
+    """Formata um valor numérico para moeda USD (US$)."""
+    try:
+        val = float(value)
+        return f"US$ {val:,.2f}".replace('.', '#').replace(',', '.').replace('#', ',')
+    except (ValueError, TypeError):
+        return "US$ 0,00"
+
 def _format_float(value, decimals=6):
     """Formata um valor numérico float com um número específico de casas decimais."""
     try:
         val = float(value)
         return f"{val:,.{decimals}f}".replace('.', '#').replace(',', '.').replace('#', ',')
+    except (ValueError, TypeError):
+        return "N/A"
+
+def _format_percentage(value, decimals=2):
+    """Formata um valor numérico como porcentagem (multiplicado por 100)."""
+    try:
+        val = float(value)
+        return f"{val*100:,.{decimals}f}%".replace('.', '#').replace(',', '.').replace('#', ',')
     except (ValueError, TypeError):
         return "N/A"
 
@@ -209,6 +226,7 @@ def _open_items_popup(declaracao_id: int):
     st.session_state.show_items_popup = True
     st.rerun()
 
+
 def _display_items_popup():
     """Exibe o pop-up com a tabela de itens da DI."""
     if 'show_items_popup' not in st.session_state or not st.session_state.show_items_popup:
@@ -234,16 +252,16 @@ def _display_items_popup():
         if not df_itens.empty:
             df_itens['ncm_item'] = df_itens['ncm_item'].apply(_format_ncm)
             # Adicione outras formatações se desejar (moeda, percentual, etc.)
-            df_itens['quantidade'] = df_itens['quantidade'].apply(lambda x: f"{x:,.0f}".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['valor_unitario'] = df_itens['valor_unitario'].apply(lambda x: f"US$ {x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['valor_item_calculado'] = df_itens['valor_item_calculado'].apply(lambda x: f"R$ {x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['peso_liquido_item'] = df_itens['peso_liquido_item'].apply(lambda x: f"{x:,.3f} KG".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['ii_percent_item'] = df_itens['ii_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['ipi_percent_item'] = df_itens['ipi_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['pis_percent_item'] = df_itens['pis_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['cofins_percent_item'] = df_itens['cofins_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['icms_percent_item'] = df_itens['icms_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-            df_itens['custo_unit_di_usd'] = df_itens['custo_unit_di_usd'].apply(lambda x: f"US$ {x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
+            df_itens['quantidade'] = df_itens['quantidade'].apply(_format_int)
+            df_itens['valor_unitario'] = df_itens['valor_unitario'].apply(_format_currency_usd)
+            df_itens['valor_item_calculado'] = df_itens['valor_item_calculado'].apply(_format_currency)
+            df_itens['peso_liquido_item'] = df_itens['peso_liquido_item'].apply(_format_weight_no_kg)
+            df_itens['ii_percent_item'] = df_itens['ii_percent_item'].apply(_format_percentage)
+            df_itens['ipi_percent_item'] = df_itens['ipi_percent_item'].apply(_format_percentage)
+            df_itens['pis_percent_item'] = df_itens['pis_percent_item'].apply(_format_percentage)
+            df_itens['cofins_percent_item'] = df_itens['cofins_percent_item'].apply(_format_percentage)
+            df_itens['icms_percent_item'] = df_itens['icms_percent_item'].apply(_format_percentage)
+            df_itens['custo_unit_di_usd'] = df_itens['custo_unit_di_usd'].apply(_format_currency_usd)
 
 
         # Colunas a exibir no pop-up de itens
@@ -299,7 +317,7 @@ def _handle_declarations_table_change():
         
         st.session_state.xml_declaracoes_data = new_data_for_editor
     
-    st.rerun() # Força a re-execução para atualizar o data_editor visualmente
+    # st.rerun() # Removido: A mudança no st.data_editor já dispara uma reexecução.
 
 
 # NOVO: Função de callback para o st.file_uploader
@@ -312,20 +330,29 @@ def _handle_xml_upload(): # Removido o argumento 'uploaded_file_obj'
 
     if uploaded_file_obj is not None:
         xml_content = uploaded_file_obj.getvalue().decode("utf-8")
-        di_data_parsed, itens_data_parsed = parse_xml_data_to_dict(xml_content)
+        di_data_parsed, itens_data_parsed_raw = parse_xml_data_to_dict(xml_content)
+        # CORREÇÃO: Garante que itens_data_parsed seja sempre uma lista, mesmo que vazia
+        itens_data_parsed = itens_data_parsed_raw if itens_data_parsed_raw is not None else []
+        
         if di_data_parsed:
-            conn = connect_db(get_db_path("xml_di"))
-            if conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT id FROM xml_declaracoes WHERE numero_di = ?", (di_data_parsed.get('numero_di'),))
-                if cursor.fetchone():
-                    st.error(f"A Declaração de Importação número {di_data_parsed.get('numero_di')} já existe no banco de dados.")
-                    conn.close()
+            # CORREÇÃO: Garante que db_path é uma string
+            db_path_str = get_db_path("xml_di")
+            if db_path_str: # Verifica se o caminho não é None
+                conn = connect_db(db_path_str) # Passa a string garantida
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM xml_declaracoes WHERE numero_di = ?", (di_data_parsed.get('numero_di'),))
+                    if cursor.fetchone():
+                        st.error(f"A Declaração de Importação número {di_data_parsed.get('numero_di')} já existe no banco de dados.")
+                        conn.close()
+                    else:
+                        conn.close()
+                        # Passa a variável corrigida
+                        _open_edit_popup_before_save(di_data_parsed, itens_data_parsed)
                 else:
-                    conn.close()
-                    _open_edit_popup_before_save(di_data_parsed, itens_data_parsed)
+                    st.error("Não foi possível conectar ao banco de dados para verificar a existência da DI.")
             else:
-                st.error("Não foi possível conectar ao banco de dados para verificar a existência da DI.")
+                st.error("O caminho do banco de dados não foi encontrado.")
         
         # Para limpar o st.file_uploader, a forma mais robusta é redefinir a key do widget.
         # Isso força o Streamlit a tratar o widget como um novo.
@@ -334,7 +361,7 @@ def _handle_xml_upload(): # Removido o argumento 'uploaded_file_obj'
         if 'upload_xml_di_key' not in st.session_state:
             st.session_state.upload_xml_di_key = 0
         st.session_state.upload_xml_di_key += 1 # Altera a key para forçar a re-renderização como vazio
-        st.rerun() # Força a re-execução para que o uploader seja renderizado com a nova key
+        # st.rerun() # Removido: Chamada de st.rerun() dentro de um callback é um no-op e causa o aviso.
 
 
 def show_page():
@@ -354,27 +381,47 @@ def show_page():
     if 'upload_xml_di_key' not in st.session_state:
         st.session_state.upload_xml_di_key = 0
 
-    # Botões de ação
-    # Usar a nova função de callback para o uploader
+    # Botão de importação XML
     st.file_uploader(
         "Importar XML DI",
         type=["xml"],
-        key=f"upload_xml_di_widget_{st.session_state.upload_xml_di_key}", # Usando key dinâmica
-        on_change=_handle_xml_upload # Callback para quando o arquivo muda
+        key=f"upload_xml_di_widget_{st.session_state.upload_xml_di_key}",
+        on_change=_handle_xml_upload
     )
 
-    col2 = st.columns(1)[0]
+    st.markdown("---") # Separador após o uploader
 
-    with col2:
-        # Botão Editar
-        if st.button("Editar DI Selecionada"):
-            if 'selected_di_id' in st.session_state and st.session_state.selected_di_id:
-                _open_edit_popup(st.session_state.selected_di_id)
-            else:
-                st.warning("Selecione uma Declaração de Importação para editar.")
+    # Ações para a DI selecionada (botões de edição, delete e detalhes)
+    if st.session_state.get('selected_di_id'):
+        selected_di_id = st.session_state.selected_di_id
+        col_edit, col_delete, col_details = st.columns(3)
 
+        with col_edit:
+            if st.button("Editar DI Selecionada", key="btn_edit_selected_di"):
+                _open_edit_popup(selected_di_id)
 
-    st.markdown("---")
+        with col_delete:
+            # Adiciona uma caixa de seleção para confirmação antes de deletar
+            confirm_delete = st.checkbox("Confirmar exclusão desta DI?", key=f"confirm_delete_main_{selected_di_id}")
+            delete_button_disabled = not confirm_delete # O botão é desabilitado até que a caixa seja marcada
+
+            if st.button("Deletar DI do Banco de Dados", key=f"btn_delete_main_{selected_di_id}", disabled=delete_button_disabled):
+                if delete_declaracao(selected_di_id):
+                    st.success(f"DI deletada com sucesso.")
+                    st.session_state.selected_di_id = None # Limpa a seleção
+                    st.rerun() # Manter: Essencial para atualizar a tabela após a exclusão e limpar a seleção
+                else:
+                    st.error(f"Falha ao deletar DI.")
+        
+        with col_details:
+            if st.button(f"Ver Detalhes da DI ID {selected_di_id}", key="btn_view_details"):
+                st.session_state.selected_di_id_detalhes = selected_di_id
+                st.session_state.current_page = "Pagamentos"
+                st.rerun() # Manter: Essencial para navegar para outra página imediatamente
+    else:
+        st.info("Selecione uma DI na tabela abaixo para habilitar as opções de edição, exclusão e detalhes.")
+    
+    st.markdown("---") # Separador antes da tabela
 
     st.subheader("Declarações de Importação Salvas")
 
@@ -448,45 +495,7 @@ def show_page():
 
     # --- Fim da Seção de Carregamento e Exibição da Tabela ---
 
-    # Ações para a DI selecionada (botões de cálculo e delete)
-    if st.session_state.get('selected_di_id'):
-        selected_di_id = st.session_state.selected_di_id
-        col_detalhes, col_deletar, col_futura, col_paclog, col_fechamento = st.columns(5)
-
-        with col_detalhes:
-            if st.button(f"Ver Detalhes da DI ID {selected_di_id}", key="btn_view_details"):
-                st.session_state.selected_di_id_detalhes = selected_di_id
-                st.session_state.current_page = "Pagamentos"
-                st.rerun()
-        with col_deletar:
-            if st.button(f"Deletar DI ID {selected_di_id}", key="btn_delete_di"):
-                # Adicionar confirmação antes de deletar
-                st.warning("Tem certeza que deseja deletar esta DI? Esta ação é irreversível.")
-                if st.button("Confirmar Exclusão", key="confirm_delete_btn"):
-                    if delete_declaracao(selected_di_id):
-                        st.success(f"DI ID {selected_di_id} deletada com sucesso.")
-                        st.session_state.selected_di_id = None # Limpa a seleção
-                        st.rerun()
-                    else:
-                        st.error(f"Falha ao deletar DI ID {selected_di_id}.")
-        with col_futura:
-            if st.button(f"Calcular Futura (ID {selected_di_id})", key="btn_calc_futura"):
-                st.session_state.selected_di_id_futura = selected_di_id
-                st.session_state.current_page = "Cálculo Futura"
-                st.rerun()
-        with col_paclog:
-            if st.button(f"Calcular Pac Log Elo (ID {selected_di_id})", key="btn_calc_paclog_elo"):
-                st.session_state.selected_di_id_paclog = selected_di_id
-                st.session_state.current_page = "Cálculo Pac Log - Elo"
-                st.rerun()
-        with col_fechamento:
-            if st.button(f"Calcular Fechamento (ID {selected_di_id})", key="btn_calc_fechamento"):
-                st.session_state.selected_di_id_fechamento = selected_di_id
-                st.session_state.current_page = "Cálculo Fechamento"
-                st.rerun()
-    else:
-        st.info("Selecione uma DI na tabela acima para ver as opções.")
-
+    # Final general info
     st.markdown("---")
     st.write("Esta tela permite importar XMLs de Declarações de Importação, visualizá-los, editá-los e excluí-los.")
 
@@ -573,16 +582,16 @@ def _open_edit_popup(declaracao_id_db):
                     # Formatar colunas para exibição
                     if not df_itens.empty:
                         df_itens['ncm_item'] = df_itens['ncm_item'].apply(_format_ncm)
-                        df_itens['quantidade'] = df_itens['quantidade'].apply(lambda x: f"{x:,.0f}".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['valor_unitario'] = df_itens['valor_unitario'].apply(lambda x: f"US$ {x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['valor_item_calculado'] = df_itens['valor_item_calculado'].apply(lambda x: f"R$ {x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['peso_liquido_item'] = df_itens['peso_liquido_item'].apply(lambda x: f"{x:,.3f} KG".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['ii_percent_item'] = df_itens['ii_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['ipi_percent_item'] = df_itens['ipi_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['pis_percent_item'] = df_itens['pis_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['cofins_percent_item'] = df_itens['cofins_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['icms_percent_item'] = df_itens['icms_percent_item'].apply(lambda x: f"{x*100:,.2f}%".replace('.', '#').replace(',', '.').replace('#', ','))
-                        df_itens['custo_unit_di_usd'] = df_itens['custo_unit_di_usd'].apply(lambda x: f"US$ {x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
+                        df_itens['quantidade'] = df_itens['quantidade'].apply(_format_int)
+                        df_itens['valor_unitario'] = df_itens['valor_unitario'].apply(_format_currency_usd)
+                        df_itens['valor_item_calculado'] = df_itens['valor_item_calculado'].apply(_format_currency)
+                        df_itens['peso_liquido_item'] = df_itens['peso_liquido_item'].apply(_format_weight_no_kg)
+                        df_itens['ii_percent_item'] = df_itens['ii_percent_item'].apply(_format_percentage)
+                        df_itens['ipi_percent_item'] = df_itens['ipi_percent_item'].apply(_format_percentage)
+                        df_itens['pis_percent_item'] = df_itens['pis_percent_item'].apply(_format_percentage)
+                        df_itens['cofins_percent_item'] = df_itens['cofins_percent_item'].apply(_format_percentage)
+                        df_itens['icms_percent_item'] = df_itens['icms_percent_item'].apply(_format_percentage)
+                        df_itens['custo_unit_di_usd'] = df_itens['custo_unit_di_usd'].apply(_format_currency_usd)
 
                     cols_to_display = [
                         "numero_adicao", "numero_item_sequencial", "sku_item", "descricao_mercadoria",
@@ -602,7 +611,7 @@ def _open_edit_popup(declaracao_id_db):
                         st.success("Declaração de Importação atualizada com sucesso!")
                         st.session_state.xml_declaracoes_data = get_all_declaracoes() # Recarrega a tabela
                         st.session_state.selected_di_id = None # Limpa seleção para fechar popup
-                        st.rerun()
+                        # st.rerun() # Removido: Está dentro de um form_submit_button.
                     else:
                         st.error(f"Falha ao atualizar a Declaração de Importação.")
             
@@ -615,7 +624,7 @@ def _open_edit_popup(declaracao_id_db):
                             st.success(f"DI {_format_di_number(declaracao_dict['numero_di'])} excluída com sucesso!")
                             st.session_state.xml_declaracoes_data = get_all_declaracoes()
                             st.session_state.selected_di_id = None # Limpa seleção para fechar popup
-                            st.rerun()
+                            # st.rerun() # Removido: Está dentro de um form_submit_button.
                         else:
                             st.error(f"Falha ao excluir a DI {_format_di_number(declaracao_dict['numero_di'])}.")
                     else:
@@ -624,7 +633,7 @@ def _open_edit_popup(declaracao_id_db):
             with col_cancel_edit:
                 if col_cancel_edit.form_submit_button("Cancelar Edição"):
                     st.session_state.selected_di_id = None # Limpa seleção para fechar popup
-                    st.rerun()
+                    # st.rerun() # Removido: Está dentro de um form_submit_button.
 
 # Função para ser importada por outras páginas para atualizar a DI
 def update_declaracao_from_page(declaracao_id: int, di_data: Dict[str, Any]):
@@ -633,3 +642,4 @@ def update_declaracao_from_page(declaracao_id: int, di_data: Dict[str, Any]):
     para ser usada por outras páginas (ex: cálculos) que precisam atualizar a DI.
     """
     return update_declaracao(declaracao_id, di_data)
+

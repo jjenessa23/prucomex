@@ -8,8 +8,9 @@ import base64
 # Importar funções do módulo de utilitários de banco de dados
 from db_utils import (
     get_declaracao_by_id,
-    get_declaracao_by_referencia, # NOVO: Importa a função para buscar por referência
-    get_db_path # Para verificar o caminho do DB, se necessário
+    get_declaracao_by_referencia,
+    get_db_path,
+    get_all_declaracoes # NOVO: Importa a função para buscar todas as declarações
 )
 
 # Importar as páginas de cálculo Streamlit
@@ -17,8 +18,7 @@ from app_logic import calculo_portonave_page
 from app_logic import calculo_futura_page
 from app_logic import calculo_paclog_elo_page
 from app_logic import calculo_fechamento_page
-from app_logic import calculo_fn_transportes_page # NOVO: Importar a página FN Transportes
-# NOVO: Importar a página de Frete Internacional
+from app_logic import calculo_fn_transportes_page
 from app_logic import calculo_frete_internacional_page
 
 
@@ -147,7 +147,7 @@ def load_di_details(input_value):
     st.session_state.detalhes_di_data = None # Limpa dados anteriores
 
     if not input_value:
-        st.warning("Por favor, insira um ID ou Referência da DI para carregar.")
+        st.warning("Por favor, selecione ou insira um valor para carregar a DI.")
         return
     
     if get_declaracao_by_id is None or get_declaracao_by_referencia is None:
@@ -216,39 +216,53 @@ def show_page():
     set_background_image(background_image_path)
     # --- Fim da Configuração da Imagem de Fundo ---
 
-    st.subheader("Pagamentos") # ALTERADO: Nome da tela para "Pagamentos"
-
+    
     # Inicializa o estado da sessão para esta página
     if 'detalhes_di_data' not in st.session_state:
         st.session_state.detalhes_di_data = None
     if 'detalhes_di_input_value' not in st.session_state:
-        st.session_state.detalhes_di_input_value = ""
+        st.session_state.detalhes_di_input_value = "" # Será usado para o valor do selectbox
 
     # Seção para carregar DI
-    st.markdown("---")
     st.markdown("#### Carregar Declaração de Importação")
     
-    col_input_field, col_buttons = st.columns([0.7, 0.3]) 
-    
-    with col_input_field:
-        di_input_value = st.text_input(
-            "Referência para Carregar",
-            key="detalhes_di_load_input",
-            value=st.session_state.detalhes_di_input_value
-        )
-        st.session_state.detalhes_di_input_value = di_input_value
+    col_1 = st.columns(2)
+    with col_1[0]:
+        all_declarations_raw = get_all_declaracoes() # Obtém todas as declarações
+        # Extrai as referências e filtra valores nulos/vazios
+        all_references = sorted(list(set([d['informacao_complementar'] for d in all_declarations_raw if d and d['informacao_complementar']])))
         
-    with col_buttons:
-        st.markdown("##") # Espaçador para alinhar os botões
-        btn_load, btn_clear = st.columns(2)
-        with btn_load:
-            if icon_button("Carregar DI", "📄", "load_di_details_button", use_container_width=True):
-                load_di_details(di_input_value)
-        with btn_clear:
-            if icon_button("Limpar Campos", "🧹", "clear_di_details_button", use_container_width=True):
-                st.session_state.detalhes_di_input_value = ""
-                st.session_state.detalhes_di_data = None
-                st.rerun()
+        # Adiciona uma opção vazia no início
+        display_references = [""] + all_references
+
+        # Encontra o índice da referência atualmente selecionada no selectbox
+        # ou usa 0 (primeira opção vazia) se nada estiver selecionado/carregado
+        default_index = 0
+        if st.session_state.detalhes_di_input_value in display_references:
+            default_index = display_references.index(st.session_state.detalhes_di_input_value)
+        elif st.session_state.detalhes_di_data and st.session_state.detalhes_di_data.get('informacao_complementar') in display_references:
+            default_index = display_references.index(st.session_state.detalhes_di_data.get('informacao_complementar'))
+
+        di_selected_value = st.selectbox(
+            "Referência para Carregar",
+            options=display_references,
+            index=default_index,
+            key="detalhes_di_load_selectbox"
+        )
+        # Atualiza o input_value com o que foi selecionado no selectbox para a função load_di_details
+        st.session_state.detalhes_di_input_value = di_selected_value
+        
+
+    col_buttons = st.columns(8)
+    with col_buttons[1]:
+        # O botão "Carregar DI" usará o valor atual do selectbox
+        if icon_button("Carregar DI", "📄", "load_di_details_button", use_container_width=True):
+            load_di_details(st.session_state.detalhes_di_input_value)
+    with col_buttons[0]:
+        if icon_button("Limpar Campos", "🧹", "clear_di_details_button", use_container_width=True):
+            st.session_state.detalhes_di_input_value = "" # Limpa o selectbox
+            st.session_state.detalhes_di_data = None
+            st.rerun()
 
     # Exibir detalhes da DI carregada
     if st.session_state.detalhes_di_data:
@@ -258,7 +272,7 @@ def show_page():
         st.markdown("---")
         main_content_container = st.container()
         with main_content_container:
-            col_details, col_calculations = st.columns(2)
+            col_details, col_3, col_calculations = st.columns([3, 1, 2])
 
             with col_details:
                 st.markdown("##### Detalhes da Declaração de Importação")
@@ -299,7 +313,7 @@ def show_page():
                 )
 
             with col_calculations:
-                st.markdown("##### Cálculos Específicos")
+                
                 
                 # --- Categoria: Despachantes ---
                 st.markdown("###### Despachantes")
@@ -327,9 +341,7 @@ def show_page():
                 # Habilitado o botão FN Transportes
                 if icon_button("FN Transportes", "🚚", "calc_fntransportes_button", disabled=False):
                     navigate_to_calc_page("Cálculo FN Transportes", "selected_di_id_fn_transportes")
-                # NOVO: Botão para Frete Internacional
-                if icon_button("Frete Internacional", "🌍", "calc_frete_internacional_button", disabled=False):
-                    navigate_to_calc_page("Cálculo Frete Internacional", "selected_di_id_frete_internacional")
+                
                 st.markdown("---")
 
                 # --- Categoria: Seguro ---
@@ -345,7 +357,8 @@ def show_page():
                 st.markdown("---")
 
     else:
-        st.info("Nenhuma Declaração de Importação carregada. Por favor, insira um ID ou Referência e clique em 'Carregar DI'.")
+        st.info("Nenhuma Declaração de Importação carregada. Por favor, selecione uma Referência e clique em 'Carregar DI'.")
 
     st.markdown("---")
     st.write("Esta tela permite visualizar os detalhes de uma Declaração de Importação e navegar para telas de cálculo específicas.")
+

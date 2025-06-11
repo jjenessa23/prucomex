@@ -6,9 +6,9 @@ import re
 import io # Para manipulação de arquivos em memória
 import openpyxl # Para gerar e ler arquivos Excel
 from openpyxl.styles import Font, Alignment, Border, Side
-from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.pagesizes import letter, A4, landscape # Importar landscape
 from reportlab.lib.units import inch, mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, Frame, PageTemplate, NextPageTemplate # Importar Frame, PageTemplate, e NextPageTemplate
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.lib import colors
@@ -572,8 +572,37 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
     referencia_processo = di_data[6] if di_data[6] else "SemReferencia"
     file_name = f"{referencia_processo}_Relatorio.pdf"
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    buffer = io.BytesIO() 
+    doc = SimpleDocTemplate(buffer) # Inicializa sem pagesize para adicionar templates
+
+    # Define frames para o modo retrato
+    # Margens: 1 inch de cada lado (topo, base, esq, dir)
+    leftMargin, rightMargin, topMargin, bottomMargin = inch, inch, inch, inch
+
+    frame_portrait = Frame(leftMargin, bottomMargin, 
+                           A4[0] - leftMargin - rightMargin, # Largura útil
+                           A4[1] - topMargin - bottomMargin, # Altura útil
+                           id='portrait_frame')
+
+    # Define frames para o modo paisagem
+    # landscape(A4) é (altura_A4, largura_A4)
+    # Correção: Definir todas as margens para paisagem explicitamente
+    landscape_left_margin, landscape_bottom_margin = inch, inch
+    landscape_right_margin, landscape_top_margin = inch, inch # Definir as margens
+    landscape_width_usable = landscape(A4)[0] - landscape_left_margin - landscape_right_margin # Largura útil em paisagem
+    landscape_height_usable = landscape(A4)[1] - landscape_top_margin - landscape_bottom_margin # Altura útil em paisagem
+
+    frame_landscape = Frame(landscape_left_margin, landscape_bottom_margin, 
+                            landscape_width_usable,
+                            landscape_height_usable,
+                            id='landscape_frame')
+
+    # Define PageTemplates
+    portrait_template = PageTemplate(id='PortraitPage', frames=[frame_portrait], pagesize=A4)
+    landscape_template = PageTemplate(id='LandscapePage', frames=[frame_landscape], pagesize=landscape(A4))
+
+    # Adiciona os templates ao documento
+    doc.addPageTemplates([portrait_template, landscape_template])
     
     # Importante: story precisa ser uma lista
     story = []
@@ -587,6 +616,7 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
     style_normal.leading = 12
     style_bold = ParagraphStyle(name='BoldStyle', parent=style_normal, fontName='Helvetica-Bold')
 
+    # Conteúdo das primeiras páginas (modo retrato)
     story.append(Paragraph(f"Relatório do Processo de Importação - DI: {_format_di_number(di_data[1])}", style_title))
     story.append(Spacer(1, 0.2*inch))
 
@@ -749,13 +779,16 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
     story.append(table_cambio)
     story.append(Spacer(1, 0.2*inch))
 
-    # --- Detalhes dos Itens ---
-    story.append(PageBreak())
+    # --- Mudar para o modo paisagem para Detalhes dos Itens ---
+    story.append(PageBreak()) # Quebra de página antes de mudar o layout
+    story.append(NextPageTemplate('LandscapePage')) # Solicita que a próxima página use o template paisagem
+    story.append(Spacer(1, 0.1*inch)) # Adiciona um pequeno espaçador para garantir que a template seja aplicada
+
     story.append(Paragraph("Detalhes dos Itens:", style_heading))
 
     item_headers_pdf = [
-        "Código ERP", "NCM", "SKU", "Qtd", "CIF Unit.",
-        "II %", "IPI %", "PIS %", "COFINS %", "Fator Intern.",
+        "Código", "NCM", "SKU", "Qtd", "CIF Unit.",
+        "II", "IPI", "PIS", "COFINS", "Fator",
         "VLME (BRL)", "VLMD (BRL)"
     ]
     item_data_for_pdf = [item_headers_pdf]
@@ -770,10 +803,20 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
         ]
         item_data_for_pdf.append(row_values_for_pdf)
 
+    # Definir larguras das colunas para modo paisagem e aumentar SKU
     col_widths_pdf = [
-        0.8*inch,  0.6*inch,  1.0*inch,  0.4*inch,  0.7*inch,
-        0.5*inch,  0.5*inch,  0.5*inch,  0.6*inch,  0.8*inch,
-        0.8*inch,  0.8*inch
+        0.5*inch,  # Código ERP
+        0.6*inch,  # NCM
+        2.0*inch,  # SKU (aumentado para 2.0 polegadas)
+        0.4*inch,  # Qtd
+        0.7*inch,  # CIF Unit.
+        0.4*inch,  # II %
+        0.4*inch,  # IPI %
+        0.4*inch,  # PIS %
+        0.4*inch,  # COFINS %
+        0.4*inch,  # Fator Intern.
+        0.9*inch,  # VLME (BRL)
+        0.9*inch   # VLMD (BRL)
     ]
     
     table_items = Table(item_data_for_pdf, colWidths=col_widths_pdf)
@@ -814,7 +857,7 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
 
     try:
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        doc = SimpleDocTemplate(buffer, pagesize=A4) # Capa permanece em A4 retrato
         
         # Lista para armazenar os elementos do PDF
         story = []
@@ -830,11 +873,21 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
         style_value = ParagraphStyle(name='Value', parent=styles['Normal'],
                                  fontName='Helvetica', fontSize=10, alignment=TA_RIGHT)
 
-        story.append(Paragraph("PICHAU", style_center_bold_large))
+        # Add logo image
+        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo.png')
+        if os.path.exists(logo_path):
+            img = Image(logo_path)
+            # Set image size - adjust width and height as needed
+            img.drawWidth = 3*inch  
+            img.drawHeight = 0.9*inch
+            story.append(img)
+        else:
+            # Fallback to text if image not found
+            story.append(Paragraph("PICHAU", style_center_bold_large))
         story.append(Spacer(1, 0.1*inch))
 
         story.append(Paragraph(f"REFERÊNCIA DO PROCESSO: {di_data[6] if di_data[6] else ''}", style_center_bold))
-        story.append(Spacer(1, 0.2*inch))
+        story.append(Spacer(1, 0.1*inch))
 
         # Data from DI (index based on db_utils.get_declaracao_by_id)
         (id_db, numero_di, data_registro_db, valor_total_reais_xml,
@@ -861,30 +914,18 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
         ]
         table_desembaraco = Table(desembaraco_data, colWidths=[2.5*inch, 2.5*inch])
         table_desembaraco.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
             ('FONTSIZE', (0,0), (-1,-1), 10),
         ]))
         story.append(table_desembaraco)
-        story.append(Spacer(1, 0.2*inch))
-
-        fornecedor_data = [
-            ["FORNECEDOR:", st.session_state.capa_fornecedor_var]
-        ]
-        table_fornecedor = Table(fornecedor_data, colWidths=[2.5*inch, 2.5*inch])
-        table_fornecedor.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('FONTSIZE', (0,0), (-1,-1), 10),
-        ]))
-        story.append(table_fornecedor)
-        story.append(Spacer(1, 0.2*inch))
+        
+        
 
         produtos_data = [
+            ["FORNECEDOR:", st.session_state.capa_fornecedor_var],
             ["PRODUTOS:", st.session_state.capa_produtos_var],
             ["VOLUMES:", "CAIXA"], # Mock
             ["QTDE ITENS:", _format_int_no_float(sum(item[5] for item in st.session_state.itens_data if item[5] is not None))],
@@ -900,7 +941,7 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
 
         table_produtos = Table(produtos_data, colWidths=[2.5*inch, 2.5*inch])
         table_produtos.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
@@ -918,7 +959,7 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
         ]
         table_info_gerais = Table(info_gerais_data, colWidths=[2.5*inch, 2.5*inch])
         table_info_gerais.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
@@ -937,7 +978,7 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
         ]
         table_valores_usd = Table(valores_usd_data, colWidths=[2.5*inch, 2.5*inch])
         table_valores_usd.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
@@ -955,7 +996,7 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
         ]
         table_nacional = Table(nacional_data, colWidths=[2.5*inch, 2.5*inch])
         table_nacional.setStyle(TableStyle([
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
@@ -1051,7 +1092,10 @@ def show_page():
         st.session_state.capa_transportadora_var = ""
     if 'capa_nf_entrada_var' not in st.session_state:
         st.session_state.capa_nf_entrada_var = ""
-
+    
+    # Adicionada flag para controlar a atualização do contracts_df
+    if 'contracts_df_updated_by_button' not in st.session_state:
+        st.session_state.contracts_df_updated_by_button = True # Começa como True para carregar os dados iniciais
 
     st.subheader("Processo")
     col1_search, col2_search, col3 = st.columns([0.4, 0.2, 0.4])
@@ -1118,19 +1162,28 @@ def show_page():
                 st.session_state.contracts_df = pd.DataFrame(contracts_df_data)
 
                 # Preenche o primeiro contrato com a taxa cambial da DI e o VMLE em Dólar se não houver contratos carregados
-                if not contracts_db and declaracao[15] is not None and declaracao[15] > 0: # taxa_cambial_usd_declaracao
-                    vmle_brl = declaracao[7] if declaracao[7] is not None else 0.0 # vmle_declaracao
+                # e também os demais campos de Dólar
+                if declaracao[15] is not None and declaracao[15] > 0: # taxa_cambial_usd_declaracao
                     taxa_cambial = declaracao[15]
+                    vmle_brl = declaracao[7] if declaracao[7] is not None else 0.0 # vmle_declaracao
                     if taxa_cambial > 0:
                         vmle_usd = vmle_brl / taxa_cambial
-                        st.session_state.contracts_df.loc[0, 'Dólar'] = taxa_cambial
-                        st.session_state.contracts_df.loc[0, 'Valor (US$)'] = vmle_usd
+                        
+                        # Se não há contratos carregados, preenche o primeiro
+                        if not contracts_db:
+                            st.session_state.contracts_df.loc[0, 'Dólar'] = taxa_cambial
+                            st.session_state.contracts_df.loc[0, 'Valor (US$)'] = vmle_usd
+                        
+                        # Preenche todas as linhas da coluna 'Dólar' com a taxa cambial da DI
+                        st.session_state.contracts_df['Dólar'] = taxa_cambial
+
 
                 # Atualiza capa_fornecedor_var com o nome do importador
                 st.session_state.capa_fornecedor_var = declaracao[21] if declaracao[21] else ""
 
 
                 st.success(f"Dados do processo '{search_ref}' carregados!")
+                st.session_state.contracts_df_updated_by_button = True # Força a atualização dos cálculos
                 
             else:
                 st.session_state.di_data = None
@@ -1153,31 +1206,46 @@ def show_page():
     st.markdown("---")
 
     # --- Abas para Totais, Impostos, Despesas e Contratos ---
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Total do Processo", "Impostos", "Despesas", "Contratos", "Comparativos"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Total do Processo", "Impostos", "Despesas", "Contratos de Câmbio", "Comparativos"])
 
     # Realiza os cálculos
     # Os cálculos agora são feitos uma vez no início da página e atualizados pelos callbacks
-    process_totals, taxes_data, expenses_display, itens_df_calculated, soma_contratos_usd, diferenca_contratos_usd = \
-        perform_calculations(st.session_state.di_data, st.session_state.itens_data, st.session_state.expense_inputs, st.session_state.contracts_df)
+    # ou pelo botão de atualização dos contratos
     
-    # Store calculated totals in session state for PDF generation
-    st.session_state.process_totals = process_totals
-    st.session_state.taxes_data = taxes_data
-    st.session_state.expenses_display = expenses_display
-    st.session_state.soma_contratos_usd = soma_contratos_usd
-    st.session_state.diferenca_contratos_usd = diferenca_contratos_usd
-    st.session_state.total_para_nf = expenses_display.get("TOTAL PARA NF", "R$ 0,00").replace('R$', '').replace('.', '').replace(',', '.').strip()
-    try:
-        st.session_state.total_para_nf = float(st.session_state.total_para_nf)
-    except ValueError:
-        st.session_state.total_para_nf = 0.0
+    # Se a flag contracts_df_updated_by_button for True, recalcula e depois seta para False
+    if st.session_state.contracts_df_updated_by_button:
+        process_totals, taxes_data, expenses_display, itens_df_calculated, soma_contratos_usd, diferenca_contratos_usd = \
+            perform_calculations(st.session_state.di_data, st.session_state.itens_data, st.session_state.expense_inputs, st.session_state.contracts_df)
+        
+        st.session_state.process_totals = process_totals
+        st.session_state.taxes_data = taxes_data
+        st.session_state.expenses_display = expenses_display
+        st.session_state.soma_contratos_usd = soma_contratos_usd
+        st.session_state.diferenca_contratos_usd = diferenca_contratos_usd
+        
+        # Atualiza total_para_nf
+        st.session_state.total_para_nf = expenses_display.get("TOTAL PARA NF", "R$ 0,00").replace('R$', '').replace('.', '').replace(',', '.').strip()
+        try:
+            st.session_state.total_para_nf = float(st.session_state.total_para_nf)
+        except ValueError:
+            st.session_state.total_para_nf = 0.0
+        
+        st.session_state.contracts_df_updated_by_button = False # Reseta a flag
+
+    # Usa os valores armazenados no session_state para exibir
+    process_totals = st.session_state.process_totals
+    taxes_data = st.session_state.taxes_data
+    expenses_display = st.session_state.expenses_display
+    soma_contratos_usd = st.session_state.soma_contratos_usd
+    diferenca_contratos_usd = st.session_state.diferenca_contratos_usd
+    itens_df_calculated = perform_calculations(st.session_state.di_data, st.session_state.itens_data, st.session_state.expense_inputs, st.session_state.contracts_df)[3]
 
 
     with tab1:
         st.subheader("TOTAL DO PROCESSO")
         if process_totals:
             st.markdown("##### Valores do Processo")
-            cols = st.columns(3)
+            cols = st.columns(5)
             cols[0].markdown("**Item**")
             cols[1].markdown("**Valor (R$)**")
             cols[2].markdown("**Valor (US$)**")
@@ -1195,7 +1263,7 @@ def show_page():
                 ("Fator Geral", process_totals["Fator Geral"], "--")
             ]
             for item, val_brl, val_usd in items_to_display:
-                cols = st.columns(3)
+                cols = st.columns(5)
                 cols[0].write(item)
                 cols[1].write(val_brl)
                 cols[2].write(val_usd)
@@ -1203,14 +1271,14 @@ def show_page():
             st.info("Carregue os dados da DI para ver os totais do processo.")
 
     with tab2:
-        st.subheader("IMPOSTOS")
+        
         if taxes_data:
             st.markdown("##### Impostos Totais")
-            cols = st.columns(2)
+            cols = st.columns(5)
             cols[0].markdown("**Imposto**")
             cols[1].markdown("**Valor**")
             for tax, value in taxes_data.items():
-                cols = st.columns(2)
+                cols = st.columns(5)
                 cols[0].write(tax)
                 cols[1].write(value)
         else:
@@ -1219,13 +1287,15 @@ def show_page():
     with tab3:
         st.subheader("DESPESAS")
         if expenses_display:
-            st.markdown("##### Despesas do Processo (Editáveis e Fixas)")
-            # Campos editáveis com on_change para atualizar os cálculos
-            st.session_state.expense_inputs['afrmm'] = st.number_input("AFRMM", value=st.session_state.expense_inputs['afrmm'], format="%.2f", key="afrmm_input", on_change=update_all_calculations)
-            st.session_state.expense_inputs['siscoserv'] = st.number_input("SISCOSERV", value=st.session_state.expense_inputs['siscoserv'], format="%.2f", key="siscoserv_input", on_change=update_all_calculations)
-            st.session_state.expense_inputs['descarregamento'] = st.number_input("DESCARREGAMENTO", value=st.session_state.expense_inputs['descarregamento'], format="%.2f", key="descarregamento_input", on_change=update_all_calculations)
-            st.session_state.expense_inputs['taxas_destino'] = st.number_input("TAXAS DESTINO", value=st.session_state.expense_inputs['taxas_destino'], format="%.2f", key="taxas_destino_input", on_change=update_all_calculations)
-            st.session_state.expense_inputs['multa'] = st.number_input("MULTA", value=st.session_state.expense_inputs['multa'], format="%.2f", key="multa_input", on_change=update_all_calculations)
+            st.markdown("##### Despesas do Processo")
+            cols = st.columns(4)
+            with cols[0]:
+                # Campos editáveis com on_change para atualizar os cálculos
+                st.session_state.expense_inputs['afrmm'] = st.number_input("AFRMM", value=st.session_state.expense_inputs['afrmm'], format="%.2f", key="afrmm_input", on_change=update_all_calculations)
+                st.session_state.expense_inputs['siscoserv'] = st.number_input("SISCOSERV", value=st.session_state.expense_inputs['siscoserv'], format="%.2f", key="siscoserv_input", on_change=update_all_calculations)
+                st.session_state.expense_inputs['descarregamento'] = st.number_input("DESCARREGAMENTO", value=st.session_state.expense_inputs['descarregamento'], format="%.2f", key="descarregamento_input", on_change=update_all_calculations)
+                st.session_state.expense_inputs['taxas_destino'] = st.number_input("TAXAS DESTINO", value=st.session_state.expense_inputs['taxas_destino'], format="%.2f", key="taxas_destino_input", on_change=update_all_calculations)
+                st.session_state.expense_inputs['multa'] = st.number_input("MULTA", value=st.session_state.expense_inputs['multa'], format="%.2f", key="multa_input", on_change=update_all_calculations)
 
             st.markdown("---")
             st.markdown("##### Resumo das Despesas")
@@ -1263,27 +1333,36 @@ def show_page():
         if st.session_state.di_data:
             st.markdown("##### Edite os Contratos de Câmbio")
             
-            # Editor de contratos com callback
-            edited_df = st.data_editor(
-                st.session_state.contracts_df,
-                column_config={
-                    "Nº Contrato": st.column_config.TextColumn("Nº Contrato"),
-                    "Dólar": st.column_config.NumberColumn("Dólar", format="%.4f"),
-                    "Valor (US$)": st.column_config.NumberColumn("Valor (US$)", format="$%.2f"),
-                },
-                num_rows="dynamic",
-                hide_index=True,
-                use_container_width=True,
-                key="contracts_editor",
-                on_change=update_all_calculations # Callback para atualizar os cálculos
-            )
-            
-            # Atualiza o DataFrame na session_state
-            st.session_state.contracts_df = edited_df
+            # Editor de contratos sem on_change para atualizar apenas com o botão
+            # É crucial que contracts_df_temp seja inicializado com st.session_state.contracts_df
+            # para que o editor comece com os valores atuais.
+            col_1, col_2, col_3 = st.columns([0.5, 0.1, 0.2]) # Colunas para o editor e os totais
+            with col_1:
+                contracts_df_temp = st.data_editor(
+                    st.session_state.contracts_df,
+                    column_config={
+                        "Nº Contrato": st.column_config.TextColumn("Nº Contrato", width="small"),
+                        "Dólar": st.column_config.NumberColumn("Dólar", format="%.4f",width="small"),
+                        "Valor (US$)": st.column_config.NumberColumn("Valor (US$)", format="$%.2f",width="medium"),
+                    },
+                    num_rows="dynamic",
+                    hide_index=True,
+                    use_container_width=True,
+                    key="contracts_editor_no_live_update", # Nova chave para o editor
+                )
 
-            st.markdown("---")
-            st.markdown(f"**Soma Contratos (US$):** {_format_float(soma_contratos_usd, 2, prefix='US$ ')}")
-            st.markdown(f"**Diferença (US$):** {_format_float(diferenca_contratos_usd, 2, prefix='US$ ')}")
+            # Botão para atualizar os contratos e recalcular a página
+            
+            
+            with col_3:
+                if st.button("Atualizar Contratos", key="update_contracts_button"):
+                    st.session_state.contracts_df = contracts_df_temp # Atualiza o DataFrame persistente
+                    st.session_state.contracts_df_updated_by_button = True # Força o recálculo
+                    st.rerun() # Dispara um rerun para que os cálculos reflitam as mudanças
+                
+                st.markdown("##### Totais dos Contratos")
+                st.markdown(f"Soma Contratos (US$): {_format_float(soma_contratos_usd, 2, prefix='USD ')}")
+                st.markdown(f"Diferença (US$): {_format_float(diferenca_contratos_usd, 2, prefix='USD ')}")
         else:
             st.info("Carregue os dados da DI para ver e editar os contratos.")
 
@@ -1300,7 +1379,7 @@ def show_page():
              recinto, embalagem, quantidade_volumes_total, acrescimo_total_declaracao,
              imposto_importacao_total_declaracao_db, armazenagem_db, frete_nacional_db) = st.session_state.di_data
 
-            st.markdown("##### Comparativo de Valores (Calculado vs. Banco de Dados)")
+            st.markdown("##### Comparativo de Valores (Calculado vs. Declaração de Importação)")
             
             comparative_data = []
 

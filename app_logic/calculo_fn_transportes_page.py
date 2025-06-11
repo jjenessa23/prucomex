@@ -113,7 +113,7 @@ def _save_frete_nacional_to_db():
         return
 
     if update_declaracao_field(di_id, 'frete_nacional', frete_nacional_float):
-        st.success(f"Valor do Frete Nacional ({_format_currency(frete_nacional_float)}) salvo com sucesso para a DI ID {di_id}!")
+        st.success(f"Frete Nacional ({_format_currency(frete_nacional_float)}) salvo com sucesso")
     else:
         st.error(f"Falha ao salvar o valor do Frete Nacional para a DI ID {di_id}.")
 
@@ -457,9 +457,9 @@ def show_calculo_fn_transportes_page():
                 )
                 qty_baixa_col1, qty_baixa_col2 = st.columns(2)
                 with qty_baixa_col1:
-                    st.button(" + ", key="fn_qtde_baixa_vazio_plus", use_container_width=True, on_click=_increment_qtde_baixa_vazio)
+                    st.button(" ➕ ", key="fn_qtde_baixa_vazio_plus", use_container_width=True, on_click=_increment_qtde_baixa_vazio)
                 with qty_baixa_col2:
-                    st.button(" - ", key="fn_qtde_baixa_vazio_minus", use_container_width=True, on_click=_decrement_qtde_baixa_vazio)
+                    st.button(" ➖ ", key="fn_qtde_baixa_vazio_minus", use_container_width=True, on_click=_decrement_qtde_baixa_vazio)
             else:
                 # Garante que o valor seja 0 se "Não" for selecionado
                 st.session_state.fn_transportes_qtde_baixa_vazio_input = "0"
@@ -547,36 +547,45 @@ def show_calculo_fn_transportes_page():
     }
     </style>
     """, unsafe_allow_html=True)
-    st.text_input(
-        "Diferença",
-        value=st.session_state.fn_transportes_diferenca_input,
-        key="fn_transportes_diferenca_input",
-        on_change=perform_fn_transportes_calculations, # Recalcula ao alterar
-        label_visibility="collapsed"
-    )
-    st.write('<div class="btn-container">', unsafe_allow_html=True)
-    st.button("+0.01", key="fn_diferenca_plus", on_click=_increment_diferenca)
-    st.button("-0.01", key="fn_diferenca_minus", on_click=_decrement_diferenca)
-    st.write('</div>', unsafe_allow_html=True)
+    col_1  = st.columns(2)
+
+    with col_1[0]:
+        st.text_input(
+            "Diferença",
+            value=st.session_state.fn_transportes_diferenca_input,
+            key="fn_transportes_diferenca_input",
+            on_change=perform_fn_transportes_calculations, # Recalcula ao alterar
+            label_visibility="collapsed"
+        )
+    
+    col_2  = st.columns(8)
+    with col_2[0]:
+        st.write('<div class="btn-container">', unsafe_allow_html=True)
+        col_2  = st.columns(2)
+        with col_2[0]:
+            st.button("+0.01", key="fn_diferenca_plus", on_click=_increment_diferenca)
+        with col_2[1]:
+            st.button("-0.01", key="fn_diferenca_minus", on_click=_decrement_diferenca)
+            st.write('</div>', unsafe_allow_html=True)
 
     st.markdown("---")
 
-    col_buttons_email, col_buttons_action = st.columns(2)
+    col_1 = st.columns(5)
 
-    with col_buttons_email:
+    with col_1[0]:
         if st.button("Gerar E-mail FN Transportes", key="fn_generate_email_btn", use_container_width=True):
             st.session_state.show_fn_email_expander = True
             st.rerun()
 
-    with col_buttons_action:
+    with col_1[1]:
         if st.button("Salvar Frete Nacional no DB", key="fn_save_frete_nacional_btn", use_container_width=True):
             _save_frete_nacional_to_db()
             # Opcional: Recarregar dados da DI para exibir o valor atualizado
             if st.session_state.fn_transportes_di_data:
                 load_fn_transportes_di_data(st.session_state.fn_transportes_di_data[0])
-            st.rerun()
+                           
 
-    st.markdown("---")
+    
 
     # Expander para exibir o conteúdo do e-mail
     if st.session_state.get('show_fn_email_expander', False):
@@ -596,3 +605,5 @@ def show_calculo_fn_transportes_page():
     if st.button("Voltar para Detalhes da DI", key="fn_voltar_di"):
         st.session_state.current_page = "Pagamentos" # Assumindo que você voltaria para a página de Pagamentos
         st.rerun()
+        
+    st.markdown("---")

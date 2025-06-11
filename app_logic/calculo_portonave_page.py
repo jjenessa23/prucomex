@@ -455,5 +455,9 @@ def show_page():
     with col_save_db:
         st.button("Salvar Armazenagem no Banco de Dados", on_click=save_armazenagem_to_db)
 
+    st.markdown("---")
     # A área de texto e o botão de cópia/abrir Gmail serão exibidos após clicar em "Gerar E-mail"
     # dentro da função send_email_action().
+    if st.button("Voltar para Detalhes da DI", key="elo_voltar_di"):
+        st.session_state.current_page = "Pagamentos" # Assumindo que você voltaria para a página de Pagamentos
+        st.rerun()

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import sqlite3
+from turtle import st
 import pandas as pd
 import os
 import logging
@@ -69,7 +70,6 @@ def conectar_followup_db():
     if not followup_db_path:
         logger.error("Caminho do DB de Follow-up não definido. Não é possível conectar.")
         return None
-
     try:
         conn = sqlite3.connect(followup_db_path)
         conn.row_factory = sqlite3.Row # Retorna linhas como dicionários-like para fácil acesso
@@ -101,7 +101,7 @@ def adicionar_coluna_se_nao_existe(conn, column_name, column_type, default_value
 
 def criar_tabela_followup(conn):
     """
-    Cria as tabelas 'processos' e 'historico_processos' se não existirem,
+    Cria as tabelas 'processos', 'historico_processos', 'process_items' e 'notifications' se não existirem,
     e adiciona novas colunas se necessário.
     """
     try:
@@ -136,7 +136,19 @@ def criar_tabela_followup(conn):
             INCOTERM TEXT,
             Comprador TEXT,
             Status_Arquivado TEXT DEFAULT 'Não Arquivado',
-            Caminho_da_pasta TEXT
+            Caminho_da_pasta TEXT,
+            Estimativa_Dolar_BRL REAL,
+            Estimativa_Seguro_BRL REAL,
+            Estimativa_II_BR REAL,
+            Estimativa_IPI_BR REAL,
+            Estimativa_PIS_BR REAL,
+            Estimativa_COFINS_BR REAL,
+            Estimativa_ICMS_BR REAL,
+            Nota_feita TEXT,
+            Conferido TEXT,
+            Ultima_Alteracao_Por TEXT,
+            Ultima_Alteracao_Em TEXT,
+            Estimativa_Impostos_Total REAL -- Nova coluna para o total de impostos
         )''')
         conn.commit()
         logger.info("Tabela 'processos' verificada/criada com sucesso com novas colunas.")
@@ -155,14 +167,50 @@ def criar_tabela_followup(conn):
         conn.commit()
         logger.info("Tabela 'historico_processos' verificada/criada com sucesso.")
 
-        # Lógica para adicionar novas colunas se a tabela 'processos' já existia sem elas
-        cursor.execute("PRAGMA table_info(processos)")
-        colunas_existentes = [info[1] for info in cursor.fetchall()]
-        
-        # Adicionar as novas colunas usando a função auxiliar
+        # --- NOVA TABELA: process_items para armazenar os itens de cada processo ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS process_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            processo_id INTEGER NOT NULL,
+            codigo_interno TEXT,
+            ncm TEXT,
+            cobertura TEXT,
+            sku TEXT,
+            quantidade REAL,
+            peso_unitario REAL,
+            valor_unitario REAL,
+            valor_total_item REAL,
+            estimativa_ii_br REAL,
+            estimativa_ipi_br REAL,
+            estimativa_pis_br REAL,
+            estimativa_cofins_br REAL,
+            estimativa_icms_br REAL,
+            frete_rateado_usd REAL,
+            seguro_rateado_brl REAL,
+            vlmd_item REAL,
+            denominacao_produto TEXT,
+            detalhamento_complementar_produto TEXT,
+            FOREIGN KEY(processo_id) REFERENCES processos(id) ON DELETE CASCADE
+        )''')
+        conn.commit()
+        logger.info("Tabela 'process_items' verificada/criada com sucesso.")
+
+        # Lógica para adicionar novas colunas a 'processos' se a tabela já existia sem elas
         adicionar_coluna_se_nao_existe(conn, 'ETA_Recinto', 'TEXT')
         adicionar_coluna_se_nao_existe(conn, 'Data_Registro', 'TEXT')
-        adicionar_coluna_se_nao_existe(conn, 'DI_ID_Vinculada', 'INTEGER') # Adiciona a coluna DI_ID_Vinculada
+        adicionar_coluna_se_nao_existe(conn, 'DI_ID_Vinculada', 'INTEGER')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_Dolar_BRL', 'REAL')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_Seguro_BRL', 'REAL')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_II_BR', 'REAL')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_IPI_BR', 'REAL')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_PIS_BR', 'REAL')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_COFINS_BR', 'REAL')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_ICMS_BR', 'REAL')
+        adicionar_coluna_se_nao_existe(conn, 'Nota_feita', 'TEXT')
+        adicionar_coluna_se_nao_existe(conn, 'Conferido', 'TEXT')
+        adicionar_coluna_se_nao_existe(conn, 'Ultima_Alteracao_Por', 'TEXT')
+        adicionar_coluna_se_nao_existe(conn, 'Ultima_Alteracao_Em', 'TEXT')
+        adicionar_coluna_se_nao_existe(conn, 'Estimativa_Impostos_Total', 'REAL') # Adicionando a nova coluna aqui também
+
 
         # Lógica para adicionar a coluna 'usuario' à tabela 'historico_processos' se não existir
         cursor.execute("PRAGMA table_info(historico_processos)")
@@ -206,128 +254,115 @@ def criar_tabela_followup(conn):
         logger.exception("Erro ao criar ou atualizar as tabelas do Follow-up e Notificações")
         conn.rollback() # Reverte as alterações em caso de erro
 
+# --- Funções para manipulação de ITENS DE PROCESSO ---
 
-def importar_csv_para_db(filepath: str):
-    """
-    Importa dados de um arquivo (CSV ou Excel) para o banco de dados.
-    Mapeia as colunas do arquivo para as colunas do DB.
-    Esta função apaga os dados existentes antes de importar.
-    """
-    logger.info(f"Iniciando importação do arquivo para o DB: {filepath}")
-
+def obter_ultimo_processo_id() -> Optional[int]:
+    """Obtém o ID do último processo inserido na tabela 'processos'."""
     conn = conectar_followup_db()
     if conn is None:
-        return False # Conexão falhou, erro já logado/tratado na conectar_followup_db
-
+        return None
     try:
-        # Determina o tipo de arquivo e lê usando pandas
-        if filepath.lower().endswith(('.csv')):
-            try:
-                # Tenta ler CSV com codificação utf-8 e separador vírgula
-                df = pd.read_csv(filepath, encoding='utf-8')
-            except Exception:
-                try:
-                    # Tenta ler CSV com codificação latin-1
-                    df = pd.read_csv(filepath, sep=';')
-                except Exception:
-                    # Última tentativa com ponto e vírgula como separador
-                    df = pd.read_csv(filepath, sep=';')
-            logger.info(f"Arquivo CSV lido com {len(df.columns)} colunas e {len(df)} linhas.")
-        elif filepath.lower().endswith(('.xlsx', '.xls')):
-            # Lê arquivo Excel
-            df = pd.read_excel(filepath)
-            logger.info(f"Arquivo Excel lido com {len(df.columns)} colunas e {len(df)} linhas.")
-        else:
-            logger.error(f"Formato de arquivo não suportado para importação: {filepath}")
-            return False
-
-
-        # Limpa a tabela existente antes de importar novos dados
-        # CUIDADO: Isso APAGARÁ todos os dados atuais na tabela 'processos'!
-        # E também limpa a tabela de histórico para manter a consistência.
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM processos")
-        cursor.execute("DELETE FROM historico_processos")
-        logger.warning("Dados existentes nas tabelas 'processos' e 'historico_processos' foram apagados para importação.")
+        cursor.execute("SELECT MAX(id) FROM processos")
+        last_id = cursor.fetchone()[0]
+        logger.debug(f"Último ID de processo obtido: {last_id}")
+        return last_id
+    except Exception as e:
+        logger.exception("Erro ao obter o último ID de processo.")
+        return None
+    finally:
+        if conn:
+            conn.close()
 
-        # Mapear colunas do DataFrame para colunas do DB (assumindo que os nomes são os mesmos)
-        cursor.execute("PRAGMA table_info(processos);")
-        db_cols_info = cursor.fetchall()
-        db_col_names = [info[1] for info in db_cols_info if info[1] != 'id'] # Exclui 'id' que é auto-incrementado
-
-        # Seleciona apenas as colunas do DataFrame que existem no DB
-        cols_to_import = [col for col in df.columns if col in db_col_names]
-        df_to_import = df[cols_to_import]
-
-        # Renomeia colunas do DataFrame para garantir que correspondam exatamente aos nomes do DB
-        col_mapping = {df_col: df_col for df_col in cols_to_import}
-        df_to_import = df_to_import.rename(columns=col_mapping)
-
-        # --- Conversão explícita de tipos antes de inserir ---
-        # Isso ajuda a evitar o FutureWarning e garante compatibilidade com SQLite
-        for col_name, col_type in {'Quantidade': int, 'Valor_USD': float, 'Estimativa_Impostos_BR': float, 'Estimativa_Frete_USD': float, 'DI_ID_Vinculada': int}.items():
-            if col_name in df_to_import.columns:
-                # Converte para o tipo, tratando erros (coerce) e preenchendo NaN com 0.
-                df_to_import[col_name] = pd.to_numeric(df_to_import[col_name], errors='coerce').fillna(0).astype(col_type)
-        
-        # Converte colunas de data para stringYYYY-MM-DD
-        for col_name in ["Data_Compra", "Data_Embarque", "Previsao_Pichau", "ETA_Recinto", "Data_Registro"]:
-            if col_name in df_to_import.columns:
-                df_to_import[col_name] = pd.to_datetime(df_to_import[col_name], errors='coerce').dt.strftime('%Y-%m-%d').fillna(None)
-
-        # Substitui valores NaN por None para SQLite (após conversão de tipo)
-        df_to_import = df_to_import.where(pd.notnull(df_to_import), None)
-        # --- FIM DA CONVERSÃO ---
-
-        # Inserir dados do DataFrame no banco de dados
-        df_to_import.to_sql('processos', conn, if_exists='append', index=False)
-
+def deletar_itens_processo(processo_id: int) -> bool:
+    """Deleta todos os itens associados a um processo específico."""
+    conn = conectar_followup_db()
+    if conn is None:
+        return False
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM process_items WHERE processo_id = ?", (processo_id,))
         conn.commit()
-        logger.info(f"Dados do DataFrame importados com sucesso para o DB. ({len(df_to_import)} linhas importadas)")
+        logger.info(f"Itens do processo ID {processo_id} deletados com sucesso.")
         return True
     except Exception as e:
-        logger.exception("Erro durante a importação do DataFrame para o DB")
+        logger.exception(f"Erro ao deletar itens do processo ID {processo_id}.")
         conn.rollback()
         return False
     finally:
         if conn:
             conn.close()
 
-def importar_csv_para_db_from_dataframe(df_to_import: pd.DataFrame):
-    """
-    Importa dados de um DataFrame já pré-processado para o banco de dados.
-    Esta função apaga os dados existentes antes de importar.
-    """
-    logger.info(f"Iniciando importação do DataFrame para o DB. ({len(df_to_import)} linhas para importar)")
-
+def inserir_item_processo(
+    processo_id: int,
+    codigo_interno: Optional[str],
+    ncm: Optional[str],
+    cobertura: Optional[str],
+    sku: Optional[str],
+    quantidade: Optional[float],
+    peso_unitario: Optional[float],
+    valor_unitario: Optional[float],
+    valor_total_item: Optional[float],
+    estimativa_ii_br: Optional[float],
+    estimativa_ipi_br: Optional[float],
+    estimativa_pis_br: Optional[float],
+    estimativa_cofins_br: Optional[float],
+    estimativa_icms_br: Optional[float],
+    frete_rateado_usd: Optional[float],
+    seguro_rateado_brl: Optional[float],
+    vlmd_item: Optional[float],
+    denominacao_produto: Optional[str],
+    detalhamento_complementar_produto: Optional[str]
+) -> bool:
+    """Insere um novo item associado a um processo na tabela process_items."""
     conn = conectar_followup_db()
     if conn is None:
-        return False # Conexão falhou, erro já logado/tratado na conectar_followup_db
-
+        return False
     try:
-        # Limpa a tabela existente antes de importar novos dados
-        # CUIDADO: Isso APAGARÁ todos os dados atuais na tabela 'processos'!
-        # E também limpa a tabela de histórico para manter a consistência.
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM processos")
-        cursor.execute("DELETE FROM historico_processos")
-        logger.warning("Dados existentes nas tabelas 'processos' e 'historico_processos' foram apagados para importação via DataFrame.")
-
-        # Inserir dados do DataFrame no banco de dados
-        # O DataFrame já deve estar com os tipos e nomes de coluna corretos
-        df_to_import.to_sql('processos', conn, if_exists='append', index=False)
-
+        cursor.execute('''INSERT INTO process_items (
+                            processo_id, codigo_interno, ncm, cobertura, sku,
+                            quantidade, peso_unitario, valor_unitario, valor_total_item,
+                            estimativa_ii_br, estimativa_ipi_br, estimativa_pis_br,
+                            estimativa_cofins_br, estimativa_icms_br,
+                            frete_rateado_usd, seguro_rateado_brl, vlmd_item,
+                            denominacao_produto, detalhamento_complementar_produto
+                          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                       (
+                           processo_id, codigo_interno, ncm, cobertura, sku,
+                           quantidade, peso_unitario, valor_unitario, valor_total_item,
+                           estimativa_ii_br, estimativa_ipi_br, estimativa_pis_br,
+                           estimativa_cofins_br, estimativa_icms_br,
+                           frete_rateado_usd, seguro_rateado_brl, vlmd_item,
+                           denominacao_produto, detalhamento_complementar_produto
+                       ))
         conn.commit()
-        logger.info(f"Dados do DataFrame importados com sucesso para o DB. ({len(df_to_import)} linhas importadas)")
+        logger.debug(f"Item inserido para o processo ID {processo_id}.")
         return True
     except Exception as e:
-        logger.exception("Erro durante a importação do DataFrame para o DB.")
+        logger.exception(f"Erro ao inserir item para o processo ID {processo_id}.")
         conn.rollback()
         return False
     finally:
         if conn:
             conn.close()
 
+def obter_itens_processo(processo_id: int) -> List[Dict[str, Any]]:
+    """Obtém todos os itens associados a um processo específico."""
+    conn = conectar_followup_db()
+    if conn is None:
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM process_items WHERE processo_id = ?", (processo_id,))
+        itens = cursor.fetchall()
+        return [dict(item) for item in itens]
+    except Exception as e:
+        logger.exception(f"Erro ao obter itens do processo ID {processo_id}.")
+        return []
+    finally:
+        if conn:
+            conn.close()
 
 def obter_processos_filtrados(status_filtro="Todos", termos_pesquisa=None):
     """Busca processos do banco de dados aplicando filtros de status e termos de pesquisa."""
@@ -555,9 +590,17 @@ def atualizar_status_processo(processo_id: int, novo_status: Optional[str]):
         return False
     try:
         cursor = conn.cursor()
+        original_process_data = obter_processo_por_id(processo_id) # Buscar dados originais aqui
+        original_status = original_process_data['Status_Geral'] if original_process_data else None
+        
         cursor.execute('UPDATE processos SET "Status_Geral" = ? WHERE id = ?', (novo_status, processo_id))
         conn.commit()
         logger.info(f"Status do processo ID {processo_id} atualizado para '{novo_status}'.")
+
+        user_info = st.session_state.get('user_info', {'username': 'Desconhecido'})
+        username = user_info.get('username')
+        inserir_historico_processo(processo_id, "Status_Geral", original_status, novo_status, username)
+        
         return True
     except Exception as e:
         logger.exception(f"Erro ao atualizar status do processo ID {processo_id}")
