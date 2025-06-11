@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import sqlite3
-from turtle import st
+import streamlit as st
 import pandas as pd
 import os
 import logging
