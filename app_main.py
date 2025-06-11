@@ -232,7 +232,7 @@ try:
     import db_utils
 except ImportError:
     st.error("ERRO CRÍTICO: O módulo 'db_utils' não foi encontrado. Por favor, certifique-se de que 'db_utils.py' está no mesmo diretório que 'app_main.py' e que todas as dependências estão instaladas.")
-    st.stop() # Interrompe a execução do aplicativo se o db_utils não puder ser importado
+     # Interrompe a execução do aplicativo se o db_utils não puder ser importado
 
 # Importar followup_db_manager diretamente
 import followup_db_manager
