@@ -542,7 +542,7 @@ else:
             notification_page.display_notifications_on_home(current_username)
             st.markdown("---")
             
-            st.write(f"Versão da Aplicação: {st.session_state.get('app_version', '2.0.1')}")
+            st.write(f"Versão da Aplicação: {st.session_state.get('app_version', '2.0.3')}")
             st.write("Status dos Bancos de Dados:")
             if st.session_state.get('db_initialized', False):
                 st.success("- Bancos de dados inicializados e conectados.")
