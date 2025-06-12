@@ -357,27 +357,27 @@ if not st.session_state.authenticated:
         st.markdown("**Versão da Aplicação:** 2.0.1")
         st.info("Informe as credenciais de login ao sistema para continuar.")
              
- if 'db_initialized' not in st.session_state:
-    st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
-    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+     if 'db_initialized' not in st.session_state:
+        st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        
+        # Tenta criar o diretório 'data' se não existir
+        if not os.path.exists(data_dir):
+            try:
+                os.makedirs(data_dir)
+                logger.info(f"Diretório de dados '{data_dir}' criado.")
+                st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
+            except OSError as e:
+                logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
+                st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
+                st.session_state.db_initialized = False
+                st.stop()
+        else:
+            st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
     
-    # Tenta criar o diretório 'data' se não existir
-    if not os.path.exists(data_dir):
-        try:
-            os.makedirs(data_dir)
-            logger.info(f"Diretório de dados '{data_dir}' criado.")
-            st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
-        except OSError as e:
-            logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
-            st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
-            st.session_state.db_initialized = False
-            st.stop()
-    else:
-        st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
-
-    st.info("DEBUG: Chamando db_utils.create_tables()...")
-    tables_created_general = db_utils.create_tables()
-    st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
+        st.info("DEBUG: Chamando db_utils.create_tables()...")
+        tables_created_general = db_utils.create_tables()
+        st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
 
     # --- NOVO: Debugging detalhado para o banco de dados 'produtos' ---
     conn_prod = db_utils.connect_db(db_utils.get_db_path("produtos"))
