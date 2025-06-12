@@ -74,6 +74,9 @@ def format_ncm_code(ncm_raw: str) -> str:
     return formatted_ncm
 
 def show_ncm_list_page():
+    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
+    set_background_image(background_image_path)
+    
     """
     Exibe a página de Listagem NCM para adicionar, visualizar e gerenciar itens NCM.
     """
