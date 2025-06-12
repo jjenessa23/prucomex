@@ -4,7 +4,7 @@ import sys
 import os
 import logging
 import re
-
+import base64
 # Adiciona o diretório raiz do projeto ao sys.path para importações
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
