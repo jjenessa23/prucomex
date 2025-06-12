@@ -44,90 +44,7 @@ def show_ncm_list_page():
     Exibe a página de Listagem NCM para adicionar, visualizar e gerenciar itens NCM.
     """
     st.title("Cadastro e Consulta de NCM e Impostos")
-    # Tabela para exibir os itens NCM existentes
-    st.subheader("Itens NCM Cadastrados")
-    itens_ncm = db_utils.selecionar_todos_ncm_itens()
 
-    if itens_ncm:
-        # Converte os resultados para um DataFrame do pandas
-        # As colunas retornadas por sqlite3.Row são os nomes reais do banco de dados.
-        # Criamos o DataFrame com esses nomes para facilitar o acesso.
-        df_display_editable = pd.DataFrame(itens_ncm, columns=[
-            "ID", "ncm_code", "descricao_item", "ii_aliquota", "ipi_aliquota", "pis_aliquota", "cofins_aliquota", "icms_aliquota"
-        ])
-        
-        # Adiciona a coluna NCM formatada para exibição
-        df_display_editable["Código NCM"] = df_display_editable["ncm_code"].apply(format_ncm_code)
-
-        # Renomeia as colunas de alíquotas para os nomes de exibição (sem o RAW), mas os dados subjacentes são numéricos
-        df_display_editable = df_display_editable.rename(columns={
-            "descricao_item": "Descrição",
-            "ii_aliquota": "II (%)",
-            "ipi_aliquota": "IPI (%)",
-            "pis_aliquota": "PIS (%)",
-            "cofins_aliquota": "COFINS (%)",
-            "icms_aliquota": "ICMS (%)"
-        })
-
-        # Exibe a tabela editável, passando o DataFrame com os tipos numéricos corretos
-        edited_df = st.data_editor(
-            df_display_editable[['ID', 'Código NCM', 'Descrição', 'II (%)', 'IPI (%)', 'PIS (%)', 'COFINS (%)', 'ICMS (%)']], # Seleciona as colunas a serem exibidas
-            column_config={
-                "ID": st.column_config.Column("ID", disabled=True),
-                "Código NCM": st.column_config.TextColumn("Código NCM", disabled=True), # NCM não é editável na tabela
-                "Descrição": st.column_config.TextColumn("Descrição do Item", help="Descrição detalhada do item NCM."),
-                "II (%)": st.column_config.NumberColumn("II (%)", format="%.2f%%", help="Alíquota do Imposto de Importação.", min_value=0.0, max_value=100.0, step=0.01),
-                "IPI (%)": st.column_config.NumberColumn("IPI (%)", format="%.2f%%", help="Alíquota do Imposto sobre Produtos Industrializados.", min_value=0.0, max_value=100.0, step=0.01),
-                "PIS (%)": st.column_config.NumberColumn("PIS (%)", format="%.2f%%", help="Alíquota do Programa de Integração Social.", min_value=0.0, max_value=100.0, step=0.01),
-                "COFINS (%)": st.column_config.NumberColumn("COFINS (%)", format="%.2f%%", help="Alíquota da Contribuição para o Financiamento da Seguridade Social.", min_value=0.0, max_value=100.0, step=0.01),
-                "ICMS (%)": st.column_config.NumberColumn("ICMS (%)", format="%.2f%%", help="Alíquota do Imposto sobre Circulação de Mercadorias e Serviços.", min_value=0.0, max_value=100.0, step=0.01),
-            },
-            hide_index=True,
-            num_rows="fixed", # Impede que o usuário adicione novas linhas diretamente na tabela
-            key="ncm_data_editor"
-        )
-
-        if st.button("Atualizar Itens Selecionados da Tabela"):
-            # Para cada linha editada, encontre a linha original e atualize
-            for edited_row_dict in edited_df.to_dict('records'):
-                ncm_code_clean = re.sub(r'\D', '', edited_row_dict['Código NCM'])
-                
-                # Para evitar acessar o DataFrame original novamente, use o NCM limpo
-                # e recupere o item NCM original para comparação (se necessário)
-                original_ncm_item_data = db_utils.get_ncm_item_by_ncm_code(ncm_code_clean)
-                
-                if original_ncm_item_data:
-                    # Get the values from the edited row
-                    new_descricao_item = edited_row_dict['Descrição']
-                    new_ii_aliquota = edited_row_dict['II (%)']
-                    new_ipi_aliquota = edited_row_dict['IPI (%)']
-                    new_pis_aliquota = edited_row_dict['PIS (%)']
-                    new_cofins_aliquota = edited_row_dict['COFINS (%)']
-                    new_icms_aliquota = edited_row_dict['ICMS (%)']
-
-                    # Compare with original values from the database (assuming 'original_ncm_item_data' is a dict or similar)
-                    desc_changed = original_ncm_item_data['descricao_item'] != new_descricao_item
-                    ii_changed = original_ncm_item_data['ii_aliquota'] != new_ii_aliquota
-                    ipi_changed = original_ncm_item_data['ipi_aliquota'] != new_ipi_aliquota
-                    pis_changed = original_ncm_item_data['pis_aliquota'] != new_pis_aliquota
-                    cofins_changed = original_ncm_item_data['cofins_aliquota'] != new_cofins_aliquota
-                    icms_changed = original_ncm_item_data['icms_aliquota'] != new_icms_aliquota
-                    
-                    if desc_changed or ii_changed or ipi_changed or pis_changed or cofins_changed or icms_changed:
-                        if db_utils.adicionar_ou_atualizar_ncm_item(
-                            ncm_code_clean,
-                            new_descricao_item,
-                            new_ii_aliquota,
-                            new_ipi_aliquota,
-                            new_pis_aliquota,
-                            new_cofins_aliquota,
-                            new_icms_aliquota
-                        ):
-                            st.success(f"Item NCM '{edited_row_dict['Código NCM']}' atualizado com sucesso!")
-                        else:
-                            st.error(f"Erro ao atualizar o item NCM '{edited_row_dict['Código NCM']}'.")
-            st.rerun() # Recarrega a página para refletir as atualizações
-            
     # Formulário para adicionar/atualizar NCM
     with st.expander("Adicionar/Atualizar Item NCM", expanded=False):
         st.subheader("Dados do Item NCM")
@@ -260,11 +177,93 @@ def show_ncm_list_page():
 
     st.markdown("---")
 
-    
+    # Tabela para exibir os itens NCM existentes
+    st.subheader("Itens NCM Cadastrados")
+    itens_ncm = db_utils.selecionar_todos_ncm_itens()
+
+    if itens_ncm:
+        # Converte os resultados para um DataFrame do pandas
+        # As colunas retornadas por sqlite3.Row são os nomes reais do banco de dados.
+        # Criamos o DataFrame com esses nomes para facilitar o acesso.
+        df_display_editable = pd.DataFrame(itens_ncm, columns=[
+            "ID", "ncm_code", "descricao_item", "ii_aliquota", "ipi_aliquota", "pis_aliquota", "cofins_aliquota", "icms_aliquota"
+        ])
+        
+        # Adiciona a coluna NCM formatada para exibição
+        df_display_editable["Código NCM"] = df_display_editable["ncm_code"].apply(format_ncm_code)
+
+        # Renomeia as colunas de alíquotas para os nomes de exibição (sem o RAW), mas os dados subjacentes são numéricos
+        df_display_editable = df_display_editable.rename(columns={
+            "descricao_item": "Descrição",
+            "ii_aliquota": "II (%)",
+            "ipi_aliquota": "IPI (%)",
+            "pis_aliquota": "PIS (%)",
+            "cofins_aliquota": "COFINS (%)",
+            "icms_aliquota": "ICMS (%)"
+        })
+
+        # Exibe a tabela editável, passando o DataFrame com os tipos numéricos corretos
+        edited_df = st.data_editor(
+            df_display_editable[['ID', 'Código NCM', 'Descrição', 'II (%)', 'IPI (%)', 'PIS (%)', 'COFINS (%)', 'ICMS (%)']], # Seleciona as colunas a serem exibidas
+            column_config={
+                "ID": st.column_config.Column("ID", disabled=True),
+                "Código NCM": st.column_config.TextColumn("Código NCM", disabled=True), # NCM não é editável na tabela
+                "Descrição": st.column_config.TextColumn("Descrição do Item", help="Descrição detalhada do item NCM."),
+                "II (%)": st.column_config.NumberColumn("II (%)", format="%.2f%%", help="Alíquota do Imposto de Importação.", min_value=0.0, max_value=100.0, step=0.01),
+                "IPI (%)": st.column_config.NumberColumn("IPI (%)", format="%.2f%%", help="Alíquota do Imposto sobre Produtos Industrializados.", min_value=0.0, max_value=100.0, step=0.01),
+                "PIS (%)": st.column_config.NumberColumn("PIS (%)", format="%.2f%%", help="Alíquota do Programa de Integração Social.", min_value=0.0, max_value=100.0, step=0.01),
+                "COFINS (%)": st.column_config.NumberColumn("COFINS (%)", format="%.2f%%", help="Alíquota da Contribuição para o Financiamento da Seguridade Social.", min_value=0.0, max_value=100.0, step=0.01),
+                "ICMS (%)": st.column_config.NumberColumn("ICMS (%)", format="%.2f%%", help="Alíquota do Imposto sobre Circulação de Mercadorias e Serviços.", min_value=0.0, max_value=100.0, step=0.01),
+            },
+            hide_index=True,
+            num_rows="fixed", # Impede que o usuário adicione novas linhas diretamente na tabela
+            key="ncm_data_editor"
+        )
+
+        if st.button("Atualizar Itens Selecionados da Tabela"):
+            # Para cada linha editada, encontre a linha original e atualize
+            for edited_row_dict in edited_df.to_dict('records'):
+                ncm_code_clean = re.sub(r'\D', '', edited_row_dict['Código NCM'])
+                
+                # Para evitar acessar o DataFrame original novamente, use o NCM limpo
+                # e recupere o item NCM original para comparação (se necessário)
+                original_ncm_item_data = db_utils.get_ncm_item_by_ncm_code(ncm_code_clean)
+                
+                if original_ncm_item_data:
+                    # Get the values from the edited row
+                    new_descricao_item = edited_row_dict['Descrição']
+                    new_ii_aliquota = edited_row_dict['II (%)']
+                    new_ipi_aliquota = edited_row_dict['IPI (%)']
+                    new_pis_aliquota = edited_row_dict['PIS (%)']
+                    new_cofins_aliquota = edited_row_dict['COFINS (%)']
+                    new_icms_aliquota = edited_row_dict['ICMS (%)']
+
+                    # Compare with original values from the database (assuming 'original_ncm_item_data' is a dict or similar)
+                    desc_changed = original_ncm_item_data['descricao_item'] != new_descricao_item
+                    ii_changed = original_ncm_item_data['ii_aliquota'] != new_ii_aliquota
+                    ipi_changed = original_ncm_item_data['ipi_aliquota'] != new_ipi_aliquota
+                    pis_changed = original_ncm_item_data['pis_aliquota'] != new_pis_aliquota
+                    cofins_changed = original_ncm_item_data['cofins_aliquota'] != new_cofins_aliquota
+                    icms_changed = original_ncm_item_data['icms_aliquota'] != new_icms_aliquota
+                    
+                    if desc_changed or ii_changed or ipi_changed or pis_changed or cofins_changed or icms_changed:
+                        if db_utils.adicionar_ou_atualizar_ncm_item(
+                            ncm_code_clean,
+                            new_descricao_item,
+                            new_ii_aliquota,
+                            new_ipi_aliquota,
+                            new_pis_aliquota,
+                            new_cofins_aliquota,
+                            new_icms_aliquota
+                        ):
+                            st.success(f"Item NCM '{edited_row_dict['Código NCM']}' atualizado com sucesso!")
+                        else:
+                            st.error(f"Erro ao atualizar o item NCM '{edited_row_dict['Código NCM']}'.")
+            st.rerun() # Recarrega a página para refletir as atualizações
 
         # Opção para deletar itens
-    st.markdown("---")
-    st.subheader("Deletar Item NCM")
+        st.markdown("---")
+        st.subheader("Deletar Item NCM")
         
         # Novo: Cria um dicionário para mapear ID para o NCM formatado
         # Usando 'ncm_code' ao invés de 'NCM_RAW'
