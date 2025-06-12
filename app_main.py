@@ -232,7 +232,7 @@ try:
     import db_utils
 except ImportError:
     st.error("ERRO CRÍTICO: O módulo 'db_utils' não foi encontrado. Por favor, certifique-se de que 'db_utils.py' está no mesmo diretório que 'app_main.py' e que todas as dependências estão instaladas.")
-     # Interrompe a execução do aplicativo se o db_utils não puder ser importado
+    st.stop() # Interrompe a execução do aplicativo se o db_utils não puder ser importado
 
 # Importar followup_db_manager diretamente
 import followup_db_manager
@@ -278,9 +278,12 @@ def authenticate_user(username, password):
     return db_utils.verify_credentials(username, password)
 
 # --- Inicialização do Banco de Dados ---
+# Este bloco agora é executado apenas uma vez, na primeira execução do script.
 if 'db_initialized' not in st.session_state:
     st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    
+    # Tenta criar o diretório 'data' se não existir
     if not os.path.exists(data_dir):
         try:
             os.makedirs(data_dir)
@@ -297,6 +300,32 @@ if 'db_initialized' not in st.session_state:
     st.info("DEBUG: Chamando db_utils.create_tables()...")
     tables_created_general = db_utils.create_tables()
     st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
+
+    # --- NOVO: Debugging detalhado para o banco de dados 'produtos' ---
+    conn_prod = db_utils.connect_db(db_utils.get_db_path("produtos"))
+    if conn_prod:
+        try:
+            cursor_prod = conn_prod.cursor()
+            # Verifica se a tabela 'produtos' existe
+            cursor_prod.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='produtos';")
+            if cursor_prod.fetchone():
+                cursor_prod.execute("PRAGMA table_info(produtos)")
+                cols_prod = [info[1] for info in cursor_prod.fetchall()]
+                cursor_prod.execute("SELECT COUNT(*) FROM produtos")
+                count_prod = cursor_prod.fetchone()[0]
+                st.info(f"DEBUG: Tabela 'produtos' existe e possui colunas: {cols_prod}")
+                st.info(f"DEBUG: Tabela 'produtos' possui {count_prod} registros.")
+            else:
+                st.warning("DEBUG: Tabela 'produtos' não encontrada no banco de dados. Pode haver um problema na criação.")
+        except Exception as e:
+            st.error(f"ERRO DEBUG: Falha ao inspecionar tabela 'produtos': {e}")
+            logger.error(f"ERRO DEBUG: Falha ao inspecionar tabela 'produtos': {e}")
+        finally:
+            conn_prod.close()
+    else:
+        st.error("ERRO DEBUG: Não foi possível conectar ao DB 'produtos' para inspeção.")
+        logger.error("ERRO DEBUG: Não foi possível conectar ao DB 'produtos' para inspeção.")
+    # --- Fim do Debugging detalhado ---
 
     if tables_created_general:
         st.session_state.db_initialized = True
@@ -367,33 +396,7 @@ if not st.session_state.authenticated:
                 st.session_state.authenticated = True
                 st.session_state.user_info = user_info
                 st.success(f"Bem-vindo, {user_info['username']}!")
-                if 'db_initialized' not in st.session_state:
-                    st.info("DEBUG: Iniciando verificação/criação do banco de dados.")
-                    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-                    if not os.path.exists(data_dir):
-                        try:
-                            os.makedirs(data_dir)
-                            logger.info(f"Diretório de dados '{data_dir}' criado.")
-                            st.info(f"DEBUG: Diretório de dados '{data_dir}' criado.")
-                        except OSError as e:
-                            logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
-                            st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
-                            st.session_state.db_initialized = False
-                    else:
-                        st.info(f"DEBUG: Diretório de dados '{data_dir}' já existe.")
-
-                    st.info("DEBUG: Chamando db_utils.create_tables()...")
-                    tables_created_general = db_utils.create_tables()
-                    st.info(f"DEBUG: Resultado db_utils.create_tables(): {tables_created_general}")
-
-                    if tables_created_general:
-                        st.session_state.db_initialized = True
-                        logger.info("Bancos de dados e tabelas inicializados com sucesso.")
-                        st.success("DEBUG: Bancos de dados e tabelas inicializados com sucesso.")
-                    else:
-                        st.session_state.db_initialized = False
-                        logger.error("Falha ao inicializar bancos de dados e tabelas.")
-                        st.error("ERRO CRÍTICO: Falha ao inicializar bancos de dados e tabelas. Verifique os logs.")
+                # REMOVIDO: O bloco de inicialização do DB duplicado
                 st.rerun()
             else:
                 st.error("Usuário ou senha incorretos.")
@@ -542,7 +545,7 @@ else:
             notification_page.display_notifications_on_home(current_username)
             st.markdown("---")
             
-            st.write(f"Versão da Aplicação: {st.session_state.get('app_version', '2.0.3')}")
+            st.write(f"Versão da Aplicação: {st.session_state.get('app_version', '2.0.1')}")
             st.write("Status dos Bancos de Dados:")
             if st.session_state.get('db_initialized', False):
                 st.success("- Bancos de dados inicializados e conectados.")
@@ -568,4 +571,3 @@ else:
                 PAGES[st.session_state.current_page]()
         else:
             st.info(f"Página '{st.session_state.current_page}' em desenvolvimento ou não encontrada.")
-
