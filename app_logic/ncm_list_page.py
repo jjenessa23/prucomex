@@ -44,6 +44,7 @@ def show_ncm_list_page():
     Exibe a página de Listagem NCM para adicionar, visualizar e gerenciar itens NCM.
     """
     st.title("Cadastro e Consulta de NCM e Impostos")
+    # Tabela para exibir os itens NCM existentes
     st.subheader("Itens NCM Cadastrados")
     itens_ncm = db_utils.selecionar_todos_ncm_itens()
 
@@ -126,6 +127,7 @@ def show_ncm_list_page():
                         else:
                             st.error(f"Erro ao atualizar o item NCM '{edited_row_dict['Código NCM']}'.")
             st.rerun() # Recarrega a página para refletir as atualizações
+            
     # Formulário para adicionar/atualizar NCM
     with st.expander("Adicionar/Atualizar Item NCM", expanded=False):
         st.subheader("Dados do Item NCM")
@@ -258,7 +260,6 @@ def show_ncm_list_page():
 
     st.markdown("---")
 
-    # Tabela para exibir os itens NCM existentes
     
 
         # Opção para deletar itens
