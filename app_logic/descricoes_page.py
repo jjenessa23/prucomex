@@ -76,15 +76,16 @@ def load_produtos():
     if not db_path:
         st.error("Caminho do banco de dados de produtos não configurado. Por favor, verifique a configuração de 'db_utils'.")
         st.session_state.produtos_data = []
-        st.session_state.produtos_data_df = pd.DataFrame()
+        # Garante que o DataFrame de sessão tenha as colunas esperadas, mesmo que vazio
+        st.session_state.produtos_data_df = pd.DataFrame(columns=[col_info['col_id'] for col_info in _COLS_MAP_PRODUTOS.values()])
         return
 
-    # st.info(f"Tentando conectar ao banco de dados de produtos em: {db_path}") # Debugging
     conn = db_utils.connect_db(db_path)
     if conn is None: # connect_db retorna None em caso de falha
         st.error("Não foi possível conectar ao banco de dados de produtos. Verifique os logs para detalhes da conexão.")
         st.session_state.produtos_data = []
-        st.session_state.produtos_data_df = pd.DataFrame()
+        # Garante que o DataFrame de sessão tenha as colunas esperadas, mesmo que vazio
+        st.session_state.produtos_data_df = pd.DataFrame(columns=[col_info['col_id'] for col_info in _COLS_MAP_PRODUTOS.values()])
         return
 
     try:
@@ -101,9 +102,17 @@ def load_produtos():
             produtos_dicts.append(p_dict)
 
         st.session_state.produtos_data = produtos_dicts
-        st.session_state.produtos_data_df = pd.DataFrame(st.session_state.produtos_data)
         
-        # Formatar NCM para exibição
+        # --- NOVO: Inicialização robusta do DataFrame de sessão ---
+        expected_cols = [col_info['col_id'] for col_info in _COLS_MAP_PRODUTOS.values()]
+        if produtos_dicts:
+            st.session_state.produtos_data_df = pd.DataFrame(st.session_state.produtos_data)
+        else:
+            # Cria um DataFrame vazio, mas com as colunas definidas
+            st.session_state.produtos_data_df = pd.DataFrame(columns=expected_cols)
+        # --- Fim da Inicialização robusta ---
+        
+        # Formatar NCM para exibição (apenas se o DataFrame não estiver vazio após a criação)
         if not st.session_state.produtos_data_df.empty:
             st.session_state.produtos_data_df['ncm'] = st.session_state.produtos_data_df['ncm'].apply(_format_ncm)
 
@@ -114,7 +123,8 @@ def load_produtos():
         st.error(f"Erro ao carregar produtos do banco de dados: {e}. Verifique a estrutura da tabela e os dados.")
         logger.exception("Erro durante o carregamento de produtos.")
         st.session_state.produtos_data = []
-        st.session_state.produtos_data_df = pd.DataFrame()
+        # Garante o DataFrame com colunas definidas MESMO em caso de erro
+        st.session_state.produtos_data_df = pd.DataFrame(columns=[col_info['col_id'] for col_info in _COLS_MAP_PRODUTOS.values()])
     finally:
         if conn:
             conn.close()
@@ -178,7 +188,8 @@ def export_selected_products():
         return
 
     # Prepare a dictionary for quick lookup of existing products from the session state
-    all_products_dict_by_id = {p['id_key_erp']: p for p in st.session_state.produtos_data}
+    # Garante que st.session_state.produtos_data exista e seja uma lista de dicionários
+    all_products_dict_by_id = {p.get('id_key_erp'): p for p in st.session_state.get('produtos_data', []) if p.get('id_key_erp')}
 
     products_to_export = []
     not_found_count = 0
@@ -247,12 +258,13 @@ def import_excel_products(uploaded_file):
         db_col_id = db_col_info['col_id']
         db_col_text = db_col_info['text']
         
+        # Prioriza o col_id exato, depois o nome amigável (sem espaços), depois o nome amigável
         if db_col_id in df.columns:
-            excel_to_db_col_map[db_col_id] = db_col_id # Prioriza o col_id exato
-        elif db_col_text in df.columns:
-            excel_to_db_col_map[db_col_id] = db_col_text # Usa o nome amigável se o col_id não for encontrado
-        elif db_col_text.replace(' ', '') in df.columns: # Tenta sem espaços também
+            excel_to_db_col_map[db_col_id] = db_col_id
+        elif db_col_text.replace(' ', '') in df.columns:
              excel_to_db_col_map[db_col_id] = db_col_text.replace(' ', '')
+        elif db_col_text in df.columns:
+            excel_to_db_col_map[db_col_id] = db_col_text
         else:
             st.error(f"Coluna obrigatória '{db_col_text}' (ou '{db_col_id}') não encontrada no arquivo Excel.")
             return
@@ -317,6 +329,9 @@ def show_page():
     # --- Estado da Sessão para esta página ---
     if 'produtos_data' not in st.session_state:
         st.session_state.produtos_data = []
+    # NOVO: Garante que produtos_data_df seja um DataFrame vazio com colunas
+    if 'produtos_data_df' not in st.session_state:
+        st.session_state.produtos_data_df = pd.DataFrame(columns=[col_info['col_id'] for col_info in _COLS_MAP_PRODUTOS.values()])
     if 'selected_produto_id' not in st.session_state:
         st.session_state.selected_produto_id = None
     if 'produtos_selecionados_ids_list' not in st.session_state: # Para a lista de seleção múltipla
@@ -342,11 +357,19 @@ def show_page():
     # Novo estado para controlar a key do text_area de IDs múltiplos
     if 'multi_id_search_input_key' not in st.session_state:
         st.session_state.multi_id_search_input_key = 0
+    # NOVO: Estado para armazenar o valor do text_area de pesquisa múltipla
+    if 'multi_id_search_input_value' not in st.session_state:
+        st.session_state.multi_id_search_input_value = ""
 
 
     # Garante que os dados sejam carregados na primeira execução ou se o estado mudar
-    if not st.session_state.produtos_data:
+    # Apenas carrega se os dados ainda não estiverem presentes ou se o DB não foi inicializado
+    # (mas a inicialização do DB é mais robusta agora em app_main)
+    if not st.session_state.produtos_data_df.empty: # Se o DataFrame já foi populado com dados
+        pass # Não recarrega, mantém o estado atual
+    else: # Se o DataFrame está vazio (primeira carga ou erro anterior)
         load_produtos() # Chamar load_produtos para carregar os dados
+        # Após a carga, ainda pode estar vazio se não houver produtos no DB
 
     # --- UI Layout ---
 
@@ -376,11 +399,28 @@ def show_page():
 
     # Aplicar filtros à exibição do DataFrame
     filtered_df_display = st.session_state.produtos_data_df.copy()
+
+    # --- NOVO: Bloco de proteção extra: Garante que as colunas de pesquisa existam no DataFrame ---
+    expected_search_cols = [col_info['col_id'] for col_info in _COLS_MAP_PRODUTOS.values()]
+    for col in expected_search_cols:
+        if col not in filtered_df_display.columns:
+            # Adiciona a coluna com valores nulos (NaN/NaT) se não existir para evitar KeyError
+            filtered_df_display[col] = pd.NA 
+    # --- Fim do bloco de proteção extra ---
+
     for col_id, search_term in st.session_state.descricoes_search_terms.items():
         if search_term:
-            filtered_df_display = filtered_df_display[
-                filtered_df_display[col_id].astype(str).str.contains(search_term, case=False, na=False)
-            ]
+            # Verifica se a coluna existe ANTES de tentar filtrá-la
+            if col_id in filtered_df_display.columns:
+                # Converte para string e aplica o filtro de contém (case-insensitive)
+                # O parâmetro 'na=False' garante que valores NaN/None não causem erro no .str.contains
+                filtered_df_display = filtered_df_display[
+                    filtered_df_display[col_id].astype(str).str.contains(search_term, case=False, na=False)
+                ]
+            else:
+                # Loga um aviso se uma coluna de pesquisa não for encontrada (útil para depuração)
+                logger.warning(f"Coluna de pesquisa '{col_id}' não encontrada em filtered_df_display para filtragem. Ignorando este filtro.")
+
 
     # Botões de Ação Principal
     col_add = st.columns(1)[0] # Apenas uma coluna para o botão "Adicionar Novo Produto"
@@ -430,23 +470,26 @@ def show_page():
                         st.rerun()
                 if is_editing:
                     if col_submit_delete.form_submit_button("Excluir Produto"):
-                        if st.session_state.get(f'confirm_delete_product_{produto_id_input}', False):
+                        # NOVO: Adiciona um checkbox de confirmação para exclusão de item único
+                        confirm_single_delete = st.checkbox("Confirmar exclusão deste produto?", key=f"confirm_single_delete_product_{produto_id_input}")
+                        if confirm_single_delete:
                             if delete_produto_from_db(produto_id_input):
                                 st.session_state.selected_produto_id = None
                                 st.session_state.open_form_button_clicked = False
-                                del st.session_state[f'confirm_delete_product_{produto_id_input}']
+                                del st.session_state[f'confirm_single_delete_product_{produto_id_input}'] # Limpa o estado da confirmação
                                 st.rerun()
                             else:
                                 st.error("Falha ao excluir o produto.")
                         else:
-                            st.session_state[f'confirm_delete_product_{produto_id_input}'] = True
-                            st.warning(f"Clique 'Excluir Produto' novamente para confirmar a exclusão de '{nome_input}'.")
+                            st.warning(f"Marque a caixa para confirmar a exclusão de '{nome_input}'.")
+
             with col_cancel:
                 if col_cancel.form_submit_button("Cancelar"):
                     st.session_state.selected_produto_id = None
                     st.session_state.open_form_button_clicked = False
-                    if f'confirm_delete_product_{produto_id_input}' in st.session_state:
-                         del st.session_state[f'confirm_delete_product_{produto_id_input}']
+                    # Limpa os estados de confirmação se o formulário for cancelado
+                    if f'confirm_single_delete_product_{produto_id_input}' in st.session_state:
+                         del st.session_state[f'confirm_single_delete_product_{produto_id_input}']
                     st.rerun()
 
     # --- Tabela de Produtos ---
@@ -467,15 +510,14 @@ def show_page():
             use_container_width=True,
             key=f"produtos_table_editor_{st.session_state.produtos_table_editor_key_counter}",
             selection_mode="multi-row",
-            on_select="rerun"
+            on_select="rerun" # Mantém rerun para ação imediata dos botões abaixo
         )
         
-        if selected_rows_data and selected_rows_data['selection']['rows']:
-            current_main_table_selected_ids = {filtered_df_display.iloc[idx]['id_key_erp'] for idx in selected_rows_data['selection']['rows']}
-            
-            for item_id in current_main_table_selected_ids:
-                if item_id not in st.session_state.produtos_selecionados_ids_list: # Mantém a unicidade ao selecionar da tabela principal
-                    st.session_state.produtos_selecionados_ids_list.append(item_id)
+        # --- NOVO: Sincronização da lista de selecionados com a seleção da tabela principal ---
+        # Recria a lista de produtos selecionados com base na seleção atual da tabela principal
+        current_main_table_selected_ids = {filtered_df_display.iloc[idx]['id_key_erp'] for idx in selected_rows_data.get('selection', {}).get('rows', [])}
+        st.session_state.produtos_selecionados_ids_list = list(current_main_table_selected_ids)
+        # --- Fim da sincronização ---
             
         col_edit_main_table, col_delete_main_table = st.columns(2)
         with col_edit_main_table:
@@ -487,27 +529,18 @@ def show_page():
         with col_delete_main_table:
             delete_disabled = len(st.session_state.produtos_selecionados_ids_list) == 0
             if st.button("Excluir Selecionado", key="delete_selected_main_table", disabled=delete_disabled):
-                if len(st.session_state.produtos_selecionados_ids_list) > 1:
-                    st.warning(f"Deseja realmente excluir {len(st.session_state.produtos_selecionados_ids_list)} produtos selecionados?")
-                    if st.button("Sim, Excluir Todos Confirmado", key="confirm_delete_all_button"):
-                        for prod_id in st.session_state.produtos_selecionados_ids_list:
-                            delete_produto_from_db(prod_id)
-                        st.session_state.produtos_selecionados_ids_list = []
-                        st.session_state.produtos_table_editor_key_counter += 1
-                        st.rerun()
-                    else:
-                        st.info("Exclusão cancelada.")
-                elif len(st.session_state.produtos_selecionados_ids_list) == 1:
-                    prod_id_to_delete = st.session_state.produtos_selecionados_ids_list[0]
-                    prod_name_to_delete = next((p['nome_part'] for p in st.session_state.produtos_data if p['id_key_erp'] == prod_id_to_delete), "Produto Desconhecido")
-                    st.warning(f"Deseja realmente excluir o produto '{prod_name_to_delete}' (ID: {prod_id_to_delete})?")
-                    if st.button("Sim, Excluir Confirmado", key=f"confirm_delete_single_button_{prod_id_to_delete}"):
-                        delete_produto_from_db(prod_id_to_delete)
-                        st.session_state.produtos_selecionados_ids_list = []
-                        st.session_state.produtos_table_editor_key_counter += 1
-                        st.rerun()
-                    else:
-                        st.info("Exclusão cancelada.")
+                # NOVO: Pop-up de confirmação para exclusão em massa
+                if len(st.session_state.produtos_selecionados_ids_list) > 0:
+                    with st.popover("Confirmar Exclusão Múltipla"):
+                        st.warning(f"Tem certeza que deseja excluir {len(st.session_state.produtos_selecionados_ids_list)} produtos selecionados?")
+                        if st.button("Sim, Excluir Todos Confirmado", key="confirm_delete_all_button_popover"):
+                            for prod_id in st.session_state.produtos_selecionados_ids_list:
+                                delete_produto_from_db(prod_id)
+                            st.session_state.produtos_selecionados_ids_list = [] # Limpa a lista após exclusão
+                            st.session_state.produtos_table_editor_key_counter += 1 # Força reload
+                            st.rerun()
+                        if st.button("Cancelar", key="cancel_delete_all_button_popover"):
+                            pass # Apenas fecha o popover
                 else:
                     st.warning("Selecione produtos para excluir.")
     else:
@@ -520,20 +553,20 @@ def show_page():
         st.write("Insira os IDs dos produtos (um por linha):")
 
         # Usando a key dinâmica para permitir a limpeza do text_area
-        multi_id_input = st.text_area("IDs dos Produtos", value=st.session_state.get('multi_id_search_input_value', ''), height=150, key=f"multi_id_search_input_expander_{st.session_state.multi_id_search_input_key}")
+        st.session_state.multi_id_search_input_value = st.text_area("IDs dos Produtos", value=st.session_state.multi_id_search_input_value, height=150, key=f"multi_id_search_input_expander_{st.session_state.multi_id_search_input_key}")
 
         col_search_expander, col_add_expander, col_close_expander = st.columns(3)
 
         with col_search_expander:
             if st.button("Buscar Produtos", key="search_multi_ids_button_expander"):
-                search_ids = [id.strip() for id in multi_id_input.split('\n') if id.strip()]
+                search_ids = [id.strip() for id in st.session_state.multi_id_search_input_value.split('\n') if id.strip()]
                 if search_ids:
                     db_path = db_utils.get_db_path("produtos")
                     
                     # Get all products to check against
-                    all_products_in_db = db_utils.selecionar_todos_produtos(db_path)
-                    # Create a dictionary for faster lookup by ID
-                    all_products_dict = {p[0]: {col_info['col_id']: p[i] for i, col_info in enumerate(_COLS_MAP_PRODUTOS.values())} for p in all_products_in_db}
+                    all_products_in_db_raw = db_utils.selecionar_todos_produtos(db_path)
+                    # Converte para dicionários para facilitar a busca
+                    all_products_dict = {p[0]: {col_info['col_id']: p[i] for i, col_info in enumerate(_COLS_MAP_PRODUTOS.values())} for p in all_products_in_db_raw}
 
                     results_for_display = []
                     found_count = 0
@@ -546,6 +579,8 @@ def show_page():
                             not_found_item = {col_info['col_id']: "" for col_info in _COLS_MAP_PRODUTOS.values()}
                             not_found_item['id_key_erp'] = s_id
                             not_found_item['nome_part'] = "Não encontrado" # Marcar como não encontrado
+                            not_found_item['descricao'] = "Produto não encontrado no banco de dados."
+                            not_found_item['ncm'] = ""
                             results_for_display.append(not_found_item)
 
                     df_found = pd.DataFrame(results_for_display)
@@ -575,13 +610,16 @@ def show_page():
             with col_add_expander:
                 if st.button("Adicionar Resultados à Lista", key="add_multi_search_to_list_button_expander"):
                     added_count = 0
+                    # Itera sobre os resultados da pesquisa, adicionando APENAS IDs encontrados à lista
                     for _, row in st.session_state.multi_search_results_df.iterrows():
                         prod_id = row['id_key_erp']
-                        # Adiciona todos os IDs, incluindo os "Não encontrado", para manter a ordem.
-                        st.session_state.produtos_selecionados_ids_list.append(prod_id) # Permite duplicatas
-                        added_count += 1
+                        if prod_id != "Não encontrado" and prod_id not in st.session_state.produtos_selecionados_ids_list:
+                            st.session_state.produtos_selecionados_ids_list.append(prod_id)
+                            added_count += 1
                     st.success(f"{added_count} produtos adicionados à lista de selecionados.")
                     st.session_state.show_multi_search_expander = False # Fecha o expander
+                    st.session_state.multi_id_search_input_value = "" # Limpa o campo de texto
+                    st.session_state.multi_id_search_input_key += 1 # Força a re-renderização
                     st.rerun()
         
         with col_close_expander:
@@ -599,8 +637,9 @@ def show_page():
 
     if st.session_state.produtos_selecionados_ids_list:
         selected_products_details = []
+        # Para cada ID na lista de selecionados, busca os detalhes (do cache ou do DB)
         for prod_id in st.session_state.produtos_selecionados_ids_list:
-            found_product = next((p for p in st.session_state.produtos_data if p['id_key_erp'] == prod_id), None)
+            found_product = next((p for p in st.session_state.produtos_data if p.get('id_key_erp') == prod_id), None)
             if found_product:
                 selected_products_details.append(found_product)
             else:
@@ -609,6 +648,8 @@ def show_page():
                 not_found_item = {col_info['col_id']: "" for col_info in _COLS_MAP_PRODUTOS.values()}
                 not_found_item['id_key_erp'] = prod_id
                 not_found_item['nome_part'] = "Não encontrado (removido do DB ou inválido)"
+                not_found_item['descricao'] = ""
+                not_found_item['ncm'] = ""
                 selected_products_details.append(not_found_item)
         
         df_selected_products = pd.DataFrame(selected_products_details)
@@ -636,32 +677,20 @@ def show_page():
             if st.button("Remover Itens Selecionados", key="remove_selected_from_list_button"):
                 if selected_list_data and selected_list_data['selection']['rows']:
                     indices_to_remove = selected_list_data['selection']['rows']
-                    # Para remover itens da lista de selecionados, precisamos reconstruir a lista
-                    # excluindo os IDs correspondentes aos índices selecionados.
-                    # É importante fazer uma cópia para evitar problemas de modificação durante a iteração.
-                    current_selected_ids_copy = st.session_state.produtos_selecionados_ids_list[:]
+                    # Cria um conjunto de IDs a serem removidos, para eficiência
+                    ids_to_remove_from_list_set = {df_selected_products.iloc[idx]['id_key_erp'] for idx in indices_to_remove}
                     
-                    # IDs a serem removidos, garantindo que a ordem não importe para a remoção
-                    ids_to_remove_set = {df_selected_products.iloc[idx]['id_key_erp'] for idx in indices_to_remove}
-                    
-                    # Reconstruir a lista, excluindo os IDs selecionados para remoção
-                    new_selected_ids_list = []
-                    for i, prod_id in enumerate(current_selected_ids_copy):
-                        # Se o ID está na lista de IDs a remover E este índice foi selecionado, não adiciona.
-                        # Isso é um pouco complexo se houver duplicatas e você quiser remover apenas *algumas* duplicatas.
-                        # Para simplificar, vamos remover todas as ocorrências do ID se ele for selecionado.
-                        # Se a intenção é remover apenas a instância selecionada, a lógica seria mais complexa.
-                        # Para o propósito atual, se o ID foi marcado para remoção, remove todas as suas ocorrências.
-                        if prod_id not in ids_to_remove_set:
-                            new_selected_ids_list.append(prod_id)
-                        # Se o ID está em ids_to_remove_set, ele não é adicionado.
-                        # Se houver múltiplas ocorrências do mesmo ID e apenas uma for selecionada visualmente,
-                        # esta lógica removerá todas as ocorrências do ID.
-                        # Se a intenção é remover APENAS a instância visualmente selecionada,
-                        # precisaríamos de um identificador único por linha no df_selected_products.
+                    # Reconstroi a lista de selecionados, excluindo os IDs marcados para remoção
+                    new_selected_ids_list = [
+                        prod_id for prod_id in st.session_state.produtos_selecionados_ids_list 
+                        if prod_id not in ids_to_remove_from_list_set
+                    ]
+                    # NOVO: Se a intenção é remover apenas UMA instância de um ID duplicado,
+                    # a lógica abaixo é mais complexa, mas a atual remove todas as ocorrências
+                    # se o ID for selecionado para remoção.
                     
                     st.session_state.produtos_selecionados_ids_list = new_selected_ids_list
-                    st.session_state.selected_products_list_selection = {'rows': []} # Limpa a seleção visual
+                    st.session_state.selected_products_list_selection = {'rows': []} # Limpa a seleção visual na tabela de selecionados
                     st.rerun()
                 else:
                     st.warning("Nenhum item selecionado para remover da lista.")
@@ -670,7 +699,7 @@ def show_page():
             if st.button("Limpar Seleção Completa", key="clear_all_selected_products_button_bottom"):
                 st.session_state.produtos_selecionados_ids_list = []
                 st.session_state.selected_products_list_selection = {'rows': []}
-                st.session_state.produtos_table_editor_key_counter += 1 
+                st.session_state.produtos_table_editor_key_counter += 1 # Força a re-renderização do dataframe principal
                 st.rerun()
         
         with col_export_selected_list:
