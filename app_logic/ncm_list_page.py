@@ -263,8 +263,8 @@ def show_ncm_list_page():
     
 
         # Opção para deletar itens
-        st.markdown("---")
-        st.subheader("Deletar Item NCM")
+    st.markdown("---")
+    st.subheader("Deletar Item NCM")
         
         # Novo: Cria um dicionário para mapear ID para o NCM formatado
         # Usando 'ncm_code' ao invés de 'NCM_RAW'
