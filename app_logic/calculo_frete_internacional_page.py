@@ -290,7 +290,7 @@ def show_calculo_frete_internacional_page():
 
 Gentileza realizar depósito para a Ethima Logistics:
 Processo: {referencia_digitada}
-Valor total a depositar: {_format_currency(total_aereo_brl_calculated, prefix='R$ ')}
+Valor total a depositar: {_format_currency(diferenca_aereo, prefix='R$ ')}
 Serviço: Frete e taxas de embarque Aéreo.
 
 Chave PIX: financeiro@ethima.com.br
