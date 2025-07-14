@@ -4,7 +4,7 @@ import sys
 import os
 import logging
 import re
-import base64
+
 # Adiciona o diretório raiz do projeto ao sys.path para importações
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -16,41 +16,7 @@ except ImportError:
     st.stop()
 
 logger = logging.getLogger(__name__)
-# --- Função para definir imagem de fundo com opacidade (copiada de app_main.py) ---
-def set_background_image(image_path):
-    try:
-        with open(image_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-        st.markdown(
-            f"""
-            <style>
-            .stApp {{
-                background-color: transparent !important; /* Garante que o fundo do app seja transparente */
-            }}
-            .stApp::before {{
-                content: "";
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background-image: url("data:image/png;base64,{encoded_string}");
-                background-size: cover;
-                background-position: center;
-                background-repeat: no-repeat;
-                background-attachment: fixed;
-                opacity: 0.20; /* Opacidade ajustada para 20% */
-                z-index: -1; /* Garante que o pseudo-elemento fique atrás do conteúdo */
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-    except FileNotFoundError:
-        st.warning(f"A imagem de fundo não foi encontrada no caminho: {image_path}")
-    except Exception as e:
-        st.error(f"Erro ao carregar a imagem de fundo: {e}")
-        
+
 def format_ncm_code(ncm_raw: str) -> str:
     """
     Formata o código NCM para o padrão '****.**.**' e garante 8 caracteres numéricos.
@@ -74,9 +40,6 @@ def format_ncm_code(ncm_raw: str) -> str:
     return formatted_ncm
 
 def show_ncm_list_page():
-    background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
-    set_background_image(background_image_path)
-    
     """
     Exibe a página de Listagem NCM para adicionar, visualizar e gerenciar itens NCM.
     """

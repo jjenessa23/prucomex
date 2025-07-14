@@ -9,20 +9,41 @@ import io
 import xlsxwriter
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from typing import Optional, Any, Dict, List, Union
-import numpy as np # Importar numpy explicitamente
-import base64 # Importar base64 explicitamente
-
-import followup_db_manager as db_manager # Importa o módulo db_manager
-# NOVO: Importa a nova página de formulário de processo
+from typing import Optional, Any, Dict, List, Union, Tuple # Importar Tuple
+import numpy as np
+import base64
+import warnings
+import followup_db_manager as db_manager
 from app_logic import process_form_page
+from app_logic import process_query_page
+import uuid
+import gc  # Para otimizações de memória baseadas no OTIMIZACOES_PERFORMANCE.md
+import threading  # Para limpeza agendada de memória
+import time  # Para cálculos de performance
+
+# Configuração de logging aprimorado
 
 
-# Configura o logger
+# Configura o logger para a aplicação
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) # Definir um nível de logging mais informativo para debug
 
-# Define a classe MockDbUtils globalmente, para evitar redeclarações
+# --- Constante da Ordem de Status ---
+# Ordem pré-determinada para exibição dos status na interface
+CUSTOM_STATUS_ORDER = [
+    'Encerrado','Chegada Pichau', 'Agendado', 'Liberado', 'Registrado',
+    'Chegada Recinto', 'Embarcado', 'Verificando','Limbo Consolidado','Limbo Saldo', 'Pré Embarque',
+    'Em Produção', 'Processo Criado', 
+    'Sem Status', 'Status Desconhecido', 'Arquivados' 
+]
+
+# --- NOVO: Definindo a constante INITIAL_CARDS_PER_CHUNK ---
+INITIAL_CARDS_PER_CHUNK = 15 # Número otimizado: 15 cards por vez (vs 20 original)
+TABLE_ROWS_INCREMENT = 50 # Incremento para carregamento de linhas na visualização de tabela
+
+# --- Mock de Utilitários de Banco de Dados (para simulação, caso o módulo real não esteja disponível) ---
 class MockDbUtils:
+    """Classe mock para simular funções de acesso ao banco de dados, útil em ambientes de desenvolvimento."""
     def get_db_path(self, db_name: str) -> str:
         _base_path = os.path.dirname(os.path.abspath(__file__))
         _app_root_path = os.path.dirname(_base_path) if os.path.basename(_base_path) == 'app_logic' else _base_path
@@ -31,22 +52,105 @@ class MockDbUtils:
     
     def get_declaracao_by_id(self, di_id: int) -> Optional[dict]:
         """Função mock para simulação de obtenção de DI por ID."""
-        if di_id == 999: # Exemplo de DI mock
-            return {'numero_di': '9988776654', 'id': 999}
-        return None 
+        # Retorna um mock de dados de DI. Adapte conforme a necessidade do mock.
+        if di_id == 'DI_MOCK_12345':
+            return {
+                'id': 'DI_MOCK_12345',
+                'numero_di': '1234567890',
+                'informacao_complementar': 'PROCESSO_ABC',
+                'frete_nacional': 150.00,
+                'armazenagem': 200.00,
+                'Honorarios_Despachante': 1000.00,
+                'Modal': 'Aéreo',
+                'taxa_cambial_usd': 5.00,
+                'imposto_importacao': 100.00,
+                'ipi': 50.00,
+                'pis_pasep': 20.00,
+                'cofins': 30.00,
+                'taxa_siscomex': 10.00,
+                'vmld': 5000.00,
+                'data_registro': '2023-01-15'
+            }
+        return None
     
-    def get_declaracao_by_process_number(self, process_number: str) -> Optional[dict]:
+    def get_declaracao_by_referencia(self, process_number: str) -> Optional[dict]:
         """Função mock para simulação de obtenção de DI por número de processo."""
-        if process_number == "MOCK-DI-123": # Exemplo de DI mock
-            return {'numero_di': '9988776654', 'id': 999}
+        # Retorna um mock de dados de DI. Adapte conforme a necessidade do mock.
+        if process_number == "PROCESSO_ABC":
+            return {
+                'id': 'DI_MOCK_12345',
+                'numero_di': '1234567890',
+                'informacao_complementar': 'PROCESSO_ABC',
+                'frete_nacional': 150.00,
+                'armazenagem': 200.00,
+                'Honorarios_Despachante': 1000.00,
+                'Modal': 'Aéreo',
+                'taxa_cambial_usd': 5.00,
+                'imposto_importacao': 100.00,
+                'ipi': 50.00,
+                'pis_pasep': 20.00,
+                'cofins': 30.00,
+                'taxa_siscomex': 10.00,
+                'vmld': 5000.00,
+                'data_registro': '2023-01-15'
+            }
         return None
 
-# Importa db_utils real, ou usa o mock se houver erro
+    def get_frete_internacional_by_referencia(self, referencia_processo: str) -> Optional[Dict[str, Any]]:
+        """Função mock para simulação de obtenção de frete internacional."""
+        if referencia_processo == "PROCESSO_ABC":
+            return {
+                'referencia_processo': 'PROCESSO_ABC',
+                'tipo_frete': 'Aéreo',
+                'total_aereo_brl': 500.00
+            }
+        return None
+
+    def get_declaracoes_by_referencias(self, referencias: List[str]) -> Dict[str, Any]:
+        """Função mock para simulação de obtenção de DI por lista de referências."""
+        mock_data = {}
+        for ref in referencias:
+            # Simula dados para cada referência, se necessário
+            mock_data[ref] = {
+                'id': f'DI_MOCK_{ref}',
+                'numero_di': f'123456789{len(ref)}',
+                'informacao_complementar': ref,
+                'frete_nacional': 150.00 + len(ref),
+                'armazenagem': 200.00 + len(ref),
+                'Honorarios_Despachante': 1000.00 + len(ref),
+                'Modal': 'Aéreo',
+                'taxa_cambial_usd': 5.00,
+                'imposto_importacao': 100.00,
+                'ipi': 50.00,
+                'pis_pasep': 20.00,
+                'cofins': 30.00,
+                'taxa_siscomex': 10.00,
+                'vmld': 5000.00,
+                'data_registro': '2023-01-15'
+            }
+        return mock_data
+
+    def get_fretes_internacionais_by_referencias(self, referencias: List[str]) -> Dict[str, Any]:
+        """Função mock para simulação de obtenção de frete internacional por lista de referências."""
+        mock_data = {}
+        for ref in referencias:
+            # Simula dados para cada referência, se necessário
+            mock_data[ref] = {
+                'referencia_processo': ref,
+                'tipo_frete': 'Aéreo',
+                'total_aereo_brl': 500.00 + len(ref)
+            }
+        return mock_data
+
+# Tenta importar o db_utils real; caso contrário, usa o mock
 db_utils: Union[Any, MockDbUtils] 
 try:
-    import db_utils # type: ignore # Ignora o erro de importação se o módulo não for encontrado inicialmente
+    import db_utils # type: ignore
     if not hasattr(db_utils, 'get_declaracao_by_id') or \
-       not hasattr(db_utils, 'get_declaracao_by_process_number'):
+       not hasattr(db_utils, 'get_declaracao_by_referencia') or \
+       not hasattr(db_utils, 'get_frete_internacional_by_referencia') or \
+       not hasattr(db_utils, 'get_declaracoes_by_referencias') or \
+       not hasattr(db_utils, 'get_fretes_internacionais_by_referencias'): # Adicionado
         logger.warning("Módulo 'db_utils' real não contém funções esperadas. Usando MockDbUtils.")
         db_utils = MockDbUtils()
 except ImportError:
@@ -54,10 +158,19 @@ except ImportError:
     db_utils = MockDbUtils()
 except Exception as e:
     logger.error(f"Erro ao importar ou inicializar 'db_utils': {e}. Usando MockDbUtils.")
-    db_utils = MockDbUtils()
+
+# Importar vincular_utils (assumindo que está no mesmo diretório ou acessível via PYTHONPATH)
+try:
+    from app_logic import vincular_utils
+except ImportError:
+    logger.error("Módulo 'vincular_utils' não encontrado. Funções relacionadas a consolidados podem não funcionar.")
+    class MockVincularUtils:
+        def listar_grupos_consolidados(self) -> List[Dict[str, Any]]:
+            return []
+    vincular_utils = MockVincularUtils()
 
 
-# --- Função para definir imagem de fundo com opacidade (copiada de app_main.py) ---
+# --- Função para definir imagem de fundo com opacidade ---
 def set_background_image(image_path: str):
     """Define uma imagem de fundo para o aplicativo Streamlit com opacidade."""
     try:
@@ -67,7 +180,7 @@ def set_background_image(image_path: str):
             f"""
             <style>
             .stApp {{
-                background-color: transparent !important; /* Garante que o fundo do app seja transparente */
+                background-color: transparent !important;
             }}
             .stApp::before {{
                 content: "";
@@ -81,8 +194,8 @@ def set_background_image(image_path: str):
                 background-position: center;
                 background-repeat: no-repeat;
                 background-attachment: fixed;
-                opacity: 0.20; /* Opacidade ajustada para 20% */
-                z-index: -1; /* Garante que o pseudo-elemento fique atrás do conteúdo */
+                opacity: 0.20;
+                z-index: -1;
             }}
             </style>
             """,
@@ -93,6 +206,8 @@ def set_background_image(image_path: str):
     except Exception as e:
         st.error(f"Erro ao carregar a imagem de fundo: {e}")
 
+
+# --- Funções Auxiliares de Formatação ---
 def _format_date_display(date_str: Optional[str]) -> str:
     """Formata uma string de data (YYYY-MM-DD) para exibição (DD/MM/YYYY)."""
     if date_str and isinstance(date_str, str):
@@ -105,7 +220,7 @@ def _format_date_display(date_str: Optional[str]) -> str:
 def _format_currency_display(value: Any) -> str:
     """Formata um valor numérico para o formato de moeda R$ X.XXX,XX."""
     try:
-        val = float(value)
+        val = safe_float(value)
         return f"R$ {val:,.2f}".replace('.', '#').replace(',', '.').replace('#', ',')
     except (ValueError, TypeError):
         return "R$ 0,00"
@@ -113,7 +228,7 @@ def _format_currency_display(value: Any) -> str:
 def _format_usd_display(value: Any) -> str:
     """Formata um valor numérico para o formato de moeda US$ X.XXX,XX."""
     try:
-        val = float(value)
+        val = safe_float(value)
         return f"US$ {val:,.2f}".replace('.', '#').replace(',', '.').replace('#', ',')
     except (ValueError, TypeError):
         return "US$ 0,00"
@@ -126,37 +241,51 @@ def _format_int_display(value: Any) -> str:
     except (ValueError, TypeError):
         return ""
 
-# Função para formatar o número da DI
 def _format_di_number(di_number: Optional[str]) -> str:
     """Formata o número da DI para o padrão **/*******-*."""
     if di_number and isinstance(di_number, str) and len(di_number) == 10:
         return f"{di_number[0:2]}/{di_number[2:9]}-{di_number[9]}"
     return di_number if di_number is not None else ""
 
-# Função para obter o número da DI a partir do ID
-def _get_di_number_from_id(di_id: Optional[int]) -> str:
+def _get_di_number_from_id(di_id: Optional[str]) -> str: # Alterado para string
     """Obtém o número da DI a partir do seu ID no banco de dados de XML DI."""
     if di_id is None:
         return "N/A"
-    di_data = db_utils.get_declaracao_by_id(di_id) # Acessa get_declaracao_by_id do db_utils
+    di_data = db_utils.get_declaracao_by_id(di_id)
     if di_data:
-        # Garante que 'numero_di' é uma string antes de passar para _format_di_number
         return _format_di_number(str(di_data.get('numero_di')))
     return "DI Não Encontrada"
 
-# --- Funções Auxiliares ---
+# Adicionado safe_float para robustez
+def safe_float(value: Any, default_value: float = 0.0) -> float:
+    """
+    Tenta converter um valor para float. Retorna default_value se a conversão falhar.
+    Útil para lidar com valores potencialmente não numéricos em dados.
+    """
+    if value is None:
+        return default_value
+    try:
+        if isinstance(value, str):
+            # Tenta remover caracteres de moeda e separadores de milhar comuns
+            value = value.replace('R$', '').replace('US$', '').replace('.', '').replace(',', '.').strip()
+        return float(value)
+    except (ValueError, TypeError):
+        return default_value
 
-def _expand_all_expanders():
-    """Define o estado da sessão para expandir todos os expanders."""
-    st.session_state.followup_expand_all_expanders = True
-
-def _collapse_all_expanders():
-    """Define o estado da sessão para recolher todos os expanders."""
-    st.session_state.followup_collapse_all_expanders = True
-    st.session_state.followup_expand_all_expanders = False
+# --- Funções Auxiliares de UI (Popups e Ações) ---
+def _display_message_box(message: str, type: str = "info"):
+    """Exibe uma caixa de mensagem customizada (substitui alert()/confirm())."""
+    if type == "info":
+        st.info(message)
+    elif type == "success":
+        st.success(message)
+    elif type == "warning":
+        st.warning(message)
+    elif type == "error":
+        st.error(message)
 
 def _display_delete_confirm_popup():
-    """Exibe um pop-up de confirmação antes de excluir um processo."""
+    """Exibe um pop-up de confirmação antes de excluir/arquivar um processo."""
     if not st.session_state.get('show_delete_confirm_popup', False):
         return
 
@@ -168,261 +297,837 @@ def _display_delete_confirm_popup():
         return
 
     with st.form(key=f"delete_confirm_form_{process_id_to_delete}"):
-        st.markdown(f"### Confirmar Exclusão")
-        st.warning(f"Tem certeza que deseja excluir o processo '{process_name_to_delete}' (ID: {process_id_to_delete})?")
+        st.markdown(f"### Confirmar Arquivamento")
+        st.warning(f"Tem certeza que deseja arquivar o processo '{process_name_to_delete}' (ID: {process_id_to_delete})? Ele não será excluído do banco de dados, mas não aparecerá na tela principal.")
         
         col_yes, col_no = st.columns(2)
         with col_yes:
-            if st.form_submit_button("Sim, Excluir"):
+            if st.form_submit_button("Sim, Arquivar"):
                 _delete_process_action(process_id_to_delete)
         with col_no:
             if st.form_submit_button("Não, Cancelar"):
                 st.session_state.show_delete_confirm_popup = False
                 st.session_state.delete_process_id_to_confirm = None
                 st.session_state.delete_process_name_to_confirm = None
-                st.rerun()
+                # Removido st.rerun() - formulários já fazem rerun automaticamente
 
-def _load_processes():
-    """Carrega os processos do DB aplicando filtros e termos de pesquisa."""
-    # Verificação robusta para o caminho do DB
-    if not hasattr(db_manager, 'get_followup_db_path') or not db_manager.get_followup_db_path(): # type: ignore
-        st.warning("Caminho do banco de dados de Follow-up não configurado. Por favor, selecione um DB.")
-        st.session_state.followup_processes_data = []
-        return
-
-    conn = db_manager.conectar_followup_db()
-    if conn:
-        try:
-            db_manager.criar_tabela_followup(conn)
-        except Exception as e:
-            st.error(f"Erro ao criar/verificar tabelas do DB de Follow-up: {e}")
-        finally:
-            conn.close()
+def _on_status_multiselect_change():
+    """Callback para mudança no multiselect de status."""
+    selected_options_with_counts = st.session_state.main_followup_status_multiselect
+    new_selected_raw_statuses = []
+    if not selected_options_with_counts or 'Todos' in selected_options_with_counts:
+        new_selected_raw_statuses.append('Todos')
     else:
-        st.error("Não foi possível conectar ao banco de dados de Follow-up.")
-        st.session_state.followup_processes_data = []
+        for opt in selected_options_with_counts:
+            new_selected_raw_statuses.append(opt.split(' (')[0])
+    st.session_state.followup_selected_statuses = new_selected_raw_statuses
+    
+    # Invalida os caches e força recarregamento de todos os dados
+    st.session_state._invalidate_filter_cache = True 
+    st.session_state.all_processes_raw_data_cache = [] # Limpa os dados em cache para forçar recarregamento
+    st.session_state.consolidated_groups_data_raw_cache = []
+    # Removido st.rerun() - callbacks não precisam de rerun manual
+
+def _on_process_search_change():
+    """Callback para mudança no campo de pesquisa de processo principal."""
+    st.session_state.followup_main_process_search_term = st.session_state.main_followup_search_processo_novo
+    
+    # Invalida os caches e força recarregamento de todos os dados
+    st.session_state._invalidate_filter_cache = True 
+    st.session_state.all_processes_raw_data_cache = [] # Limpa os dados em cache para forçar recarregamento
+    st.session_state.consolidated_groups_data_raw_cache = []
+    # Removido st.rerun() - callbacks não precisam de rerun manual
+
+
+@st.cache_data(ttl=300) # Aplicando cache à função de filtragem global (TTL aumentado para 300s/5min)
+def _apply_in_memory_filters_cached(
+    last_db_update_timestamp: datetime, # Dependência do cache de dados brutos
+    all_processes_raw_data: List[Dict[str, Any]], # Dados brutos (já carregados, possivelmente paginados)
+    consolidated_groups_data_raw: List[Dict[str, Any]], # Grupos brutos (já carregados)
+    selected_statuses: List[str],
+    main_search_term: str,
+    popup_search_terms: Dict[str, Any]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]: # Corrigido para retornar uma Tupla
+    """
+    Aplica todos os filtros (status, pesquisa principal, pesquisa popup) aos dados em cache.
+    Esta função é cacheada e só re-executa se os argumentos (filtros ou timestamp de atualização) mudarem.
+    
+    OTIMIZAÇÃO: Implementa filtros ultra-otimizados com máscaras booleanas e operações vetorizadas.
+    """
+    # Validação rápida para casos vazios
+    if not all_processes_raw_data:
+        return [], []
+    
+    # Converte para DataFrame apenas uma vez
+    df_processes_all_unfiltered = pd.DataFrame(all_processes_raw_data)
+    
+    # Se o DataFrame estiver vazio, retorna listas vazias para evitar erros
+    if df_processes_all_unfiltered.empty:
+        return [], []
+
+    # OTIMIZAÇÃO: Pré-processamento de colunas em lote com operações vetorizadas
+    default_columns = {
+        'Status_Geral': 'Sem Status',
+        'Modal': 'Sem Modal',
+        'Consolidado': 'Não',
+        'Status_Arquivado': 'Não Arquivado'
+    }
+    
+    # Aplica valores padrão em uma única operação
+    for col, default_val in default_columns.items():
+        if col not in df_processes_all_unfiltered.columns:
+            df_processes_all_unfiltered[col] = default_val
+        else:
+            # Usa fillna em vez de replace para maior performance
+            df_processes_all_unfiltered[col] = df_processes_all_unfiltered[col].fillna(default_val)
+    
+    # Garantimos que Processo_Novo existe 
+    if 'Processo_Novo' not in df_processes_all_unfiltered.columns:
+        if 'id' in df_processes_all_unfiltered.columns:
+            df_processes_all_unfiltered['Processo_Novo'] = df_processes_all_unfiltered['id']
+        else:
+            df_processes_all_unfiltered['Processo_Novo'] = 'UNKNOWN_PROCESS_' + pd.Series(range(len(df_processes_all_unfiltered))).astype(str)
+
+    # OTIMIZAÇÃO: Converte Status_Geral para categorical para ordenação rápida
+    df_processes_all_unfiltered['Status_Geral'] = pd.Categorical(
+        df_processes_all_unfiltered['Status_Geral'], 
+        categories=CUSTOM_STATUS_ORDER, 
+        ordered=True
+    )
+    
+    # Trabalhamos com o mesmo DataFrame, evitando cópia desnecessária inicialmente
+    df_filtered_in_memory = df_processes_all_unfiltered
+
+    # Verificação otimizada
+    is_main_process_name_search_active = bool(main_search_term.strip())
+    
+    # OTIMIZAÇÃO: Usa máscaras booleanas em vez de filtros em cascata
+    mask = pd.Series(True, index=df_filtered_in_memory.index)
+    
+    # Filtro de arquivados
+    if 'Arquivados' not in selected_statuses and not is_main_process_name_search_active:
+        mask &= df_filtered_in_memory['Status_Arquivado'].isin([None, "Não Arquivado"])
+    
+    # Filtro de status gerais
+    if 'Todos' not in selected_statuses:
+        general_statuses_to_filter = [s for s in selected_statuses if s != 'Todos' and s != 'Arquivados']
+        if general_statuses_to_filter:
+            status_mask = df_filtered_in_memory['Status_Geral'].isin(general_statuses_to_filter)
+            if 'Arquivados' in selected_statuses:
+                # Combina status gerais com arquivados usando OR
+                status_mask |= (df_filtered_in_memory['Status_Arquivado'] == 'Arquivado')
+            mask &= status_mask
+    
+    # Filtro de pesquisa principal (processo)
+    if main_search_term:
+        mask &= df_filtered_in_memory['Processo_Novo'].astype(str).str.lower().str.contains(main_search_term.lower(), na=False)
+    
+    # Filtros de popup com máscaras vetorizadas
+    if popup_search_terms:
+        # Pré-converte as datas para evitar múltiplas conversões
+        date_columns = {'ETA_Recinto': None, 'Data_Registro': None}
+        date_columns_needed = any(col.startswith(('ETA_Recinto', 'Data_Registro')) for col in popup_search_terms.keys() if popup_search_terms[col])
+        
+        if date_columns_needed:
+            for col in date_columns.keys():
+                if col in df_filtered_in_memory.columns:
+                    date_columns[col] = pd.to_datetime(df_filtered_in_memory[col], errors='coerce')
+        
+        # Aplica filtros de popup
+        for col, term in popup_search_terms.items():
+            if not term:  # Pula filtros vazios
+                continue
+                
+            # Filtros de texto
+            if col not in ['Processo_Novo', 'ETA_Recinto_Start', 'ETA_Recinto_End', 'Data_Registro_Start', 'Data_Registro_End']:
+                if col in df_filtered_in_memory.columns:
+                    mask &= df_filtered_in_memory[col].astype(str).str.lower().str.contains(str(term).lower(), na=False)
+            
+            # Filtros de data otimizados (evita conversões repetidas)
+            elif col == 'ETA_Recinto_Start':
+                if date_columns['ETA_Recinto'] is not None:
+                    mask &= date_columns['ETA_Recinto'] >= pd.to_datetime(term)
+            elif col == 'ETA_Recinto_End':
+                if date_columns['ETA_Recinto'] is not None:
+                    mask &= date_columns['ETA_Recinto'] <= pd.to_datetime(term)
+            elif col == 'Data_Registro_Start':
+                if date_columns['Data_Registro'] is not None:
+                    mask &= date_columns['Data_Registro'] >= pd.to_datetime(term)
+            elif col == 'Data_Registro_End':
+                if date_columns['Data_Registro'] is not None:
+                    mask &= date_columns['Data_Registro'] <= pd.to_datetime(term)
+    # Aplica a máscara final e faz uma cópia eficiente apenas após todos os filtros
+    df_filtered_in_memory = df_filtered_in_memory[mask]
+    
+    # Filtra processos não consolidados
+    consolidado_mask = df_filtered_in_memory['Consolidado'] != 'Sim'
+    df_non_consolidated_and_non_grouped = df_filtered_in_memory[consolidado_mask].copy()
+    
+    # OTIMIZAÇÃO: Converte 'Previsao_Pichau' para datetime apenas uma vez
+    df_non_consolidated_and_non_grouped['Previsao_Pichau_dt'] = pd.to_datetime(
+        df_non_consolidated_and_non_grouped['Previsao_Pichau'], 
+        errors='coerce'
+    )
+
+    # MELHORIA: Nova ordenação solicitada - Status, Previsão Pichau, Navio, Modal
+    df_non_consolidated_and_non_grouped = df_non_consolidated_and_non_grouped.sort_values(
+        by=['Status_Geral', 'Previsao_Pichau_dt', 'Navio', 'Modal', 'Processo_Novo'], 
+        ascending=[True, True, True, True, True], 
+        na_position='last' 
+    )
+    # Remove a coluna temporária após a ordenação
+    df_non_consolidated_and_non_grouped = df_non_consolidated_and_non_grouped.drop(columns=['Previsao_Pichau_dt'])
+
+    # OTIMIZAÇÃO: Filtragem otimizada de grupos consolidados
+    filtered_consolidated_groups_final = []
+    
+    # Verificação rápida para casos vazios
+    if not consolidated_groups_data_raw:
+        return df_non_consolidated_and_non_grouped.to_dict(orient='records'), []
+    
+    # Filtro de grupos consolidados otimizado com compreensão de lista
+    if is_main_process_name_search_active:
+        search_term_lower = main_search_term.lower()
+        
+        # Usa compreensão de lista em vez de loop para melhor performance
+        filtered_consolidated_groups_final = [
+            group for group in consolidated_groups_data_raw 
+            if (str(group.get('principal_id', '')).lower() == search_term_lower) or 
+               any(str(member.get('Processo_Novo', '')).lower().startswith(search_term_lower) 
+                   for member in group.get('members_data', []))
+        ]
+    else:
+        if 'Todos' not in selected_statuses:
+            general_statuses_to_filter = [s for s in selected_statuses if s != 'Todos' and s != 'Arquivados']
+            
+            for group in consolidated_groups_data_raw:
+                # Encontra o processo principal
+                principal_process_data = next(
+                    (m for m in group['members_data'] if str(m.get('id')) == str(group['principal_id'])), 
+                    None
+                )
+                
+                if principal_process_data:
+                    group_status = principal_process_data.get('Status_Geral', 'Sem Status')
+                    group_archived_status = principal_process_data.get('Status_Arquivado', 'Não Arquivado')
+                    
+                    is_matching_status = group_status in general_statuses_to_filter
+                    is_archived = group_archived_status == 'Arquivado'
+
+                    # Condições simplificadas com lógica mais clara
+                    if any([
+                        ('Arquivados' in selected_statuses and is_archived),
+                        (not is_archived and is_matching_status),
+                        (not is_main_process_name_search_active and not is_archived and 
+                         'Arquivados' not in selected_statuses and not general_statuses_to_filter)
+                    ]):
+                        filtered_consolidated_groups_final.append(group)
+        else:
+            # Se 'Todos' está selecionado, inclui todos os grupos
+            filtered_consolidated_groups_final = consolidated_groups_data_raw
+
+    # Retorna os resultados filtrados
+    return df_non_consolidated_and_non_grouped.to_dict(orient='records'), filtered_consolidated_groups_final
+
+
+@st.cache_data(ttl=300) # NOVO: Cacheando a estrutura final dos expanders (TTL aumentado para 300s)
+def _prepare_expander_data_cached(
+    last_db_update_timestamp: datetime, # Dependência do cache de dados brutos e filtrados
+    non_consolidated_data: List[Dict[str, Any]],
+    consolidated_groups_data: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Prepara e organiza os dados para a exibição nos expanders, incluindo agrupamento por status e ordenação.
+    Esta função é agora cacheadas e só re-executa se os argumentos (filtros ou timestamp de atualização) mudarem.
+    """
+    # Usar a ordem de status global definida na constante
+    current_custom_status_order = list(CUSTOM_STATUS_ORDER)
+    status_order_map = {status: i for i, status in enumerate(current_custom_status_order)}
+
+    processes_by_status_non_consolidated = {}
+    # Preserva a ordem dos dados já ordenados por Status → Previsão Pichau → Navio → Modal
+    for row_dict_item in non_consolidated_data: # Renomeado para evitar conflito
+        status = row_dict_item.get('Status_Geral', 'Sem Status')
+        # Adiciona status dinamicamente se não estiver na ordem personalizada (para evitar KeyError)
+        if status not in current_custom_status_order:
+            current_custom_status_order.append(status) # Adiciona à lista de ordenação para mapeamento
+            status_order_map[status] = len(current_custom_status_order) - 1 # Mapeia para o final
+
+        if status not in processes_by_status_non_consolidated:
+            processes_by_status_non_consolidated[status] = []
+        processes_by_status_non_consolidated[status].append(row_dict_item)
+    
+    consolidated_groups_by_status = {}
+    for group in consolidated_groups_data:
+        principal_process_data = next((m for m in group['members_data'] if str(m.get('id')) == str(group['principal_id'])), None)
+        if principal_process_data:
+            group_status = principal_process_data.get('Status_Geral', 'Sem Status')
+            # Adiciona status dinamicamente se não estiver na ordem personalizada
+            if group_status not in current_custom_status_order:
+                current_custom_status_order.append(group_status)
+                status_order_map[group_status] = len(current_custom_status_order) - 1
+
+            if group_status not in consolidated_groups_by_status:
+                consolidated_groups_by_status[group_status] = []
+            consolidated_groups_by_status[group_status].append(group)
+    
+    # Combina processos não consolidados e grupos consolidados sob o mesmo status
+    for status, groups in consolidated_groups_by_status.items():
+        if status not in processes_by_status_non_consolidated:
+            processes_by_status_non_consolidated[status] = []
+        for group in groups:
+            processes_by_status_non_consolidated[status].append({'_is_consolidated_group': True, 'group_data': group})
+
+    all_expander_keys_with_sort_data = []
+    # Usar a ordem de status final (que pode ter sido modificada dinamicamente)
+    for status in current_custom_status_order: 
+        if status in processes_by_status_non_consolidated: # Verifica se o status tem dados associados
+            all_expander_keys_with_sort_data.append({
+                'type': 'status_group',
+                'sort_key': status_order_map.get(status, len(current_custom_status_order)),
+                'status': status,
+                'processes_and_groups': processes_by_status_non_consolidated[status]  # Mudança: usar 'processes_and_groups' em vez de 'data'
+            })
+
+    # Retorna a lista final de informações dos expanders, já ordenada
+    sorted_all_expander_keys = sorted(all_expander_keys_with_sort_data, key=lambda x: x['sort_key'])
+    return sorted_all_expander_keys
+
+
+def _fetch_initial_processes():
+    """
+    Busca TODOS os processos do DB e inicializa o cache de dados brutos.
+    Agora tentará usar o carregamento progressivo otimizado, com fallback para carregamento simples.
+    """
+    try:
+        # Tenta usar o carregamento progressivo avançado
+        return _fetch_initial_processes_optimized()
+    except Exception as e:
+        # Em caso de erro, faz fallback para o carregamento simples
+        logger.error(f"Erro no carregamento progressivo: {e}. Usando carregamento simples.")
+        return _fetch_initial_processes_simple()
+
+
+def _fetch_initial_processes_optimized():
+    """
+    NOVA FUNCIONALIDADE: Carregamento progressivo otimizado conforme OTIMIZACOES_PERFORMANCE.md.
+    Carrega processos em batches controlados com feedback visual de progresso.
+    """
+    logger.info("Iniciando carregamento progressivo otimizado de processos")
+    
+    # Limpa os caches antes de iniciar
+    st.session_state.all_processes_raw_data_cache = [] 
+    st.session_state.consolidated_groups_data_raw_cache = []
+    
+    # Variáveis para controle de progresso
+    total_loaded = 0
+    start_time = time.time()
+    processes_per_second = 0
+    estimated_total = 0
+    
+    # Elementos da UI para feedback de progresso
+    progress_container = st.empty()
+    stats_container = st.empty()
+    
+    # Carrega processos em batches
+    # Define um limite máximo de batches para evitar loops infinitos em caso de erro na contagem
+    MAX_BATCHES = 100 # Ajuste conforme a expectativa de volume de dados
+    BATCH_SIZE = 50 # Número de processos a buscar por batch
+
+    for batch_num in range(MAX_BATCHES):
+        batch_start_time = time.time()
+        
+        # Define o ponto de início para paginação baseada em cursor
+        last_doc_id = None if batch_num == 0 else st.session_state.all_processes_raw_data_cache[-1].get('id')
+        
+        with progress_container:
+            if estimated_total > 0:
+                progress = min(total_loaded / estimated_total, 0.99)
+                st.progress(progress, text=f"Carregando processos: {total_loaded}/{estimated_total}")
+            else:
+                st.progress(0.1 * batch_num, text=f"Carregando batch {batch_num+1}/{MAX_BATCHES}")
+        
+        # Busca o próximo batch de processos
+        batch_processes, has_more = db_manager.obter_processos_filtrados(
+            status_filtro=st.session_state.get('followup_selected_statuses', ['Todos']),
+            termos_pesquisa=st.session_state.get('followup_popup_search_terms', {}),
+            limit=BATCH_SIZE,
+            start_after_doc_id=last_doc_id
+        )
+        
+        # Adiciona ao cache
+        st.session_state.all_processes_raw_data_cache.extend(batch_processes)
+        
+        # Atualiza métricas de progresso
+        batch_size = len(batch_processes)
+        total_loaded += batch_size
+        batch_time = time.time() - batch_start_time
+        
+        # Estima o total se ainda temos mais dados
+        if has_more and batch_size > 0:
+            # Ajusta a estimativa baseado no que já vimos
+            if batch_num == 0:
+                # Primeira estimativa: assumimos distribuição uniforme entre status
+                estimated_total = batch_size * 5  # Estimativa inicial conservadora
+            else:
+                # Refina estimativa com o que já carregamos
+                estimated_total = max(estimated_total, int(total_loaded * 1.2))
+        else:
+            # Se não há mais, o total é o que já carregamos
+            estimated_total = total_loaded
+        
+        # Calcula velocidade e ETA
+        elapsed = time.time() - start_time
+        processes_per_second = total_loaded / elapsed if elapsed > 0 else 0
+        remaining = estimated_total - total_loaded
+        eta_seconds = remaining / processes_per_second if processes_per_second > 0 else 0
+        
+        # Atualiza estatísticas
+        with stats_container:
+            st.caption(f"Velocidade: {processes_per_second:.1f} processos/s | ETA: {eta_seconds:.1f}s | Batch {batch_num+1}: {batch_size} processos em {batch_time:.2f}s")
+        
+        # Para se não há mais processos ou o batch veio vazio
+        if not has_more or batch_size == 0:
+            break
+    
+    # Finaliza a barra de progresso
+    with progress_container:
+        st.progress(1.0, text=f"Carregamento completo: {total_loaded} processos")
+    
+    # Carrega os grupos consolidados
+    with st.spinner("Carregando grupos consolidados..."):
+        from app_logic import vincular_utils  # Import aqui para evitar circular import
+        all_consolidated_groups = vincular_utils.listar_grupos_consolidados()
+        st.session_state.consolidated_groups_data_raw_cache = all_consolidated_groups
+    
+    # Limpa os elementos de progresso
+    progress_container.empty()
+    stats_container.empty()
+    
+    # Log de performance
+    total_time = time.time() - start_time
+    logger.info(f"Carregamento progressivo otimizado: {total_loaded} processos, {len(all_consolidated_groups)} grupos em {total_time:.1f}s ({processes_per_second:.1f} proc/s)")
+    
+    return total_loaded
+
+
+def _fetch_initial_processes_simple():
+    """
+    Versão simplificada da busca de processos original, usado como fallback.
+    """
+    logger.info("Usando carregamento simples como fallback")
+    with st.spinner("Carregando todos os processos..."):
+        # Limpa os dados em cache antes de buscar
+        st.session_state.all_processes_raw_data_cache = [] 
+        st.session_state.consolidated_groups_data_raw_cache = []
+        st.session_state.has_more_processes = False # Não há mais processos, pois carregamos tudo
+
+        if db_manager._USE_FIRESTORE_AS_PRIMARY and not st.session_state.get('firebase_ready', False):
+            st.error("Conexão com Firestore não estabelecida. Não é possível carregar os processos de Follow-up.")
+            return 0
+        
+        if not db_manager.criar_tabela_followup():
+            st.error(f"Não foi possível verificar/criar as coleções do banco de dados de Follow-up. Verifique sua configuração e logs.")
+            return 0
+
+        # Carrega TODOS os processos de uma vez (limit=None)
+        all_processes, _ = db_manager.obter_processos_filtrados(
+            status_filtro=st.session_state.get('followup_selected_statuses', ['Todos']),
+            termos_pesquisa=st.session_state.get('followup_popup_search_terms', {}),
+            limit=None, # Carrega todos os processos
+            start_after_doc_id=None
+        )
+        st.session_state.all_processes_raw_data_cache = all_processes
+        
+        # Carrega os grupos consolidados
+        from app_logic import vincular_utils  # Import aqui para evitar circular import
+        all_consolidated_groups = vincular_utils.listar_grupos_consolidados()
+        st.session_state.consolidated_groups_data_raw_cache = all_consolidated_groups
+        
+        # Atualiza as opções de filtro de status
+        _update_status_filter_options(pd.DataFrame(st.session_state.all_processes_raw_data_cache))
+        
+        logger.info(f"_fetch_initial_processes: Carregados {len(all_processes)} processos totais.")
+        # Força a invalidação dos caches de filtragem e preparação do expander
+        _apply_in_memory_filters_cached.clear()
+        _prepare_expander_data_cached.clear()
+
+
+# Função para encapsular a chamada às funções de filtro/preparação cacheada e atualizar o session_state
+def _call_apply_filters_and_update_session_state():
+    """
+    Chama as funções de filtro/preparação cacheada e atualiza os dados no session_state.
+    Força a invalidação do cache de filtros e da estrutura do expander se _invalidate_filter_cache for True.
+    Esta função opera sobre `all_processes_raw_data_cache` que é gerenciado pela paginação.
+    """
+    # Se a flag de invalidação estiver setada, limpa os caches relevantes
+    if st.session_state.get('_invalidate_filter_cache', False):
+        _apply_in_memory_filters_cached.clear()
+        _prepare_expander_data_cached.clear()
+        _reset_cards_loading_state()  # Reseta estado de carregamento de cards quando filtros mudam
+        _initialize_table_loading_state() # Reseta estado de carregamento de tabela quando filtros mudam
+        st.session_state._invalidate_filter_cache = False # Reseta a flag
+    
+    # Adiciona o filtro de 'Arquivados' explicitamente para _apply_in_memory_filters_cached se 'Arquivados' está em selected_statuses
+    selected_statuses_for_filter = st.session_state.get('followup_selected_statuses', ['Todos'])
+    if 'Arquivados' in st.session_state.get('followup_selected_statuses', []):
+        if 'Arquivados' not in selected_statuses_for_filter: # Garante que 'Arquivados' esteja na lista se foi selecionado
+            selected_statuses_for_filter.append('Arquivados')
+
+    # Chama a função de filtro cacheada (ela agora trabalha com os dados já carregados no cache de raw_data)
+    df_non_consolidated_data, consolidated_groups_data = _apply_in_memory_filters_cached(
+        st.session_state.get('last_db_update', datetime.min), # Passa o timestamp como argumento de cache
+        st.session_state.all_processes_raw_data_cache,
+        st.session_state.consolidated_groups_data_raw_cache,
+        selected_statuses_for_filter, # Usa a lista de status ajustada
+        st.session_state.get('followup_main_process_search_term', ''),
+        st.session_state.get('followup_popup_search_terms', {})
+    )
+    st.session_state.followup_processes_data_non_consolidated = df_non_consolidated_data
+    st.session_state.consolidated_groups_data = consolidated_groups_data
+    
+    # Chama a função de preparação do expander cacheada
+    expander_data = _prepare_expander_data_cached(
+        st.session_state.get('last_db_update', datetime.min), # Passa o timestamp como argumento de cache
+        st.session_state.followup_processes_data_non_consolidated,
+        st.session_state.consolidated_groups_data
+    )
+    st.session_state.sorted_all_expander_keys = expander_data
+    
+    # Inicializa o estado de carregamento de cards para os status disponíveis
+    available_statuses = [item['status'] for item in expander_data]
+    _reset_cards_loading_state()  # Inicializa cards para os status disponíveis
+    _initialize_table_loading_state()
+
+def _update_status_filter_options(df_all_processes_for_options: pd.DataFrame):
+    """Atualiza as opções do filtro de status com base nos status do DB, incluindo contagens."""
+    # Se o DataFrame estiver vazio, retorna apenas "Todos"
+    if df_all_processes_for_options.empty:
+        st.session_state.followup_raw_status_options_for_multiselect = ["Todos"]
+        st.session_state.followup_all_status_options = ["Todos"]
         return
 
-    selected_status_filter = st.session_state.get('followup_status_filter', 'Todos')
-    search_terms = st.session_state.get('followup_search_terms', {})
-
-    processes_raw = db_manager.obter_processos_filtrados(selected_status_filter, search_terms)
+    status_counts = df_all_processes_for_options['Status_Geral'].replace(np.nan, 'Sem Status').astype(str).value_counts().to_dict()
     
-    processes_dicts = [dict(row) for row in processes_raw]
+    arquivados_count = df_all_processes_for_options[
+        (df_all_processes_for_options['Status_Arquivado'] == 'Arquivado') | 
+        (df_all_processes_for_options['Status_Geral'] == 'Arquivados') 
+    ].shape[0]
+    
+    all_raw_status_options = list(status_counts.keys())
+    
+    # Usa a ordem de status pré-determinada definida na constante global
+    custom_order_for_options = [status for status in CUSTOM_STATUS_ORDER if status != 'Arquivados']
+    
+    sorted_status_options = sorted([s for s in all_raw_status_options if s not in custom_order_for_options and s != "Arquivados"])
+    final_ordered_status_options = [s for s in custom_order_for_options if s in all_raw_status_options] + sorted_status_options
 
-    st.session_state.followup_processes_data = processes_dicts
-    _update_status_filter_options()
-
-def _update_status_filter_options():
-    """Atualiza as opções do filtro de status com base nos status do DB."""
-    # Acesso a obter_status_gerais_distintos do db_manager
-    status_from_db = db_manager.obter_status_gerais_distintos()
-    all_status_options = ["Todos", "Arquivados"] + sorted([s for s in status_from_db if s not in ["Todos", "Arquivados"]])
-    st.session_state.followup_all_status_options = all_status_options
-
-def _import_file_action(uploaded_file: Any) -> bool:
-    """
-    Ação de importar arquivo CSV/Excel.
-    Esta função agora processará o DataFrame diretamente para lidar com formatações.
-    """
-    if uploaded_file is None:
-        return False
-
-    file_extension = os.path.splitext(uploaded_file.name)[1]
-    df = None
-
-    try:
-        if file_extension.lower() in ('.csv'):
-            try:
-                df = pd.read_csv(uploaded_file, encoding='utf-8')
-            except UnicodeDecodeError:
-                df = pd.read_csv(uploaded_file, encoding='latin-1')
-            except Exception:
-                df = pd.read_csv(uploaded_file, sep=';')
-        elif file_extension.lower() in ('.xlsx', '.xls'):
-            df = pd.read_excel(uploaded_file)
+    formatted_options_with_counts = []
+    for status in final_ordered_status_options:
+        count = status_counts.get(status, 0)
+        formatted_options_with_counts.append(f"{status} ({count})")
+    
+    if arquivados_count > 0:
+        formatted_options_with_counts.append(f"Arquivados ({arquivados_count})")
+        if 'Arquivados' not in db_manager.STATUS_OPTIONS: 
+             st.session_state.followup_raw_status_options_for_multiselect = ["Todos"] + final_ordered_status_options + ["Arquivados"]
         else:
-            st.error("Formato de arquivo não suportado. Por favor, use .csv, .xls ou .xlsx.")
-            return False
+            st.session_state.followup_raw_status_options_for_multiselect = ["Todos"] + final_ordered_status_options
+    else:
+        st.session_state.followup_raw_status_options_for_multiselect = ["Todos"] + final_ordered_status_options
 
-        df_processed = _preprocess_dataframe_for_db(df)
-
-        if df_processed is None: # Se o pré-processamento falhou
-            st.error("Falha no pré-processamento dos dados do arquivo local.")
-            return False
-
-        if db_manager.importar_csv_para_db_from_dataframe(df_processed):
-            st.success("Dados do arquivo local importados com sucesso! A tabela foi recarregada.")
-            _load_processes()
-            return True
-        else:
-            st.error("Falha ao importar dados do arquivo local para o banco de dados.")
-            return False
-
-    except Exception as e:
-        st.error(f"Erro ao processar o arquivo local: {e}")
-        logger.exception("Erro durante a importação do arquivo local.")
-        return False
+    st.session_state.followup_all_status_options = ["Todos"] + formatted_options_with_counts
 
 
-def _open_edit_process_popup(process_identifier: Optional[Any] = None):
-    """
-    Navega para a página dedicada de formulário de processo, passando os dados
-    necessários via session_state.
-    """
+def _open_edit_process_popup(process_identifier: Optional[Any] = None, is_cloning: bool = False):
+    """Navega para a página dedicada de formulário de processo."""
     st.session_state.form_process_identifier = process_identifier
-    st.session_state.form_reload_processes_callback = _load_processes
+    st.session_state.form_is_cloning = is_cloning
+    # MELHORIA: Usa callback otimizado para edição de processo específico
+    st.session_state.form_reload_processes_callback = lambda: _optimized_reload_after_process_edit(process_identifier)
     st.session_state.current_page = "Formulário Processo"
-    # Ensure all other popups are closed when navigating to a new main page
     st.session_state.show_filter_search_popup = False
-    st.session_state.show_import_popup = False
     st.session_state.show_delete_confirm_popup = False
-    st.session_state.show_mass_edit_popup = False
+    st.session_state.show_change_status_popup = False 
+    st.session_state.show_edit_checklist_popup = False 
+    # Removido st.rerun() - não necessário
+
+def _open_process_query_page(process_identifier: Any):
+    """Navega para a nova página de consulta de processo."""
+    st.session_state.query_process_identifier = process_identifier
+    st.session_state.current_page = "Consulta de Processo"
+    st.session_state.show_filter_search_popup = False
+    st.session_state.show_delete_confirm_popup = False
+    st.session_state.show_change_status_popup = False 
+    st.session_state.show_edit_checklist_popup = False 
+    # Removido st.rerun() - não necessário
+
+def _open_vincular_consolidado_page(process_id: Any):
+    """Navega para a nova página de vincular consolidado."""
+    st.session_state.process_id_to_vincular = process_id
+    st.session_state.current_page = "Vincular Consolidado"
+    st.session_state.show_filter_search_popup = False
+    st.session_state.show_delete_confirm_popup = False
+    st.session_state.show_change_status_popup = False 
+    st.session_state.show_edit_checklist_popup = False
+    # Removido st.rerun() - não necessário
+
+
+def _navigate_from_card_action(action_type: str, process_id_or_data: Any, is_cloning: bool = False):
+    """
+    Controla a navegação e atualização de session_state para ações do card.
+    O Streamlit faz o rerun automaticamente quando necessário.
+    """
+    if action_type == "query":
+        st.session_state.query_process_identifier = process_id_or_data
+        st.session_state.current_page = "Consulta de Processo"
+    elif action_type == "change_status":
+        st.session_state.show_change_status_popup = True
+        st.session_state.process_id_to_change_status = process_id_or_data.get('id')
+        st.session_state.process_name_to_change_status = process_id_or_data.get('Processo_Novo')
+        st.session_state.process_current_observacao = process_id_or_data.get('Observacao')
+    elif action_type == "edit":
+        st.session_state.selected_process_data = process_id_or_data
+        st.session_state.form_process_identifier = process_id_or_data.get('id')
+        st.session_state.current_page = "Formulário Processo"
+    elif action_type == "clone":
+        st.session_state.selected_process_data = process_id_or_data 
+        st.session_state.form_process_identifier = process_id_or_data.get('id')
+        st.session_state.form_is_cloning = True
+        st.session_state.current_page = "Formulário Processo"
+    elif action_type == "edit_checklist":
+        st.session_state.show_edit_checklist_popup = True
+        st.session_state.checklist_process_id_to_edit = process_id_or_data.get('id')
+        st.session_state.checklist_process_name_to_edit = process_id_or_data.get('Processo_Novo')
+    elif action_type == "group_consolidated":
+        st.session_state.process_id_to_vincular = process_id_or_data.get('id')
+        st.session_state.current_page = "Vincular Consolidado"
+    elif action_type == "archive":
+        st.session_state.show_delete_confirm_popup = True
+        st.session_state.delete_process_id_to_confirm = process_id_or_data.get('id')
+        st.session_state.delete_process_name_to_confirm = process_id_or_data.get('Processo_Novo')
+    
+    # Reintroduzindo st.rerun() aqui para garantir que a navegação e o estado do popup sejam processados.
     st.rerun()
 
 
-def _delete_process_action(process_id: int):
-    """Exclui um processo do banco de dados."""
-    if db_manager.excluir_processo(process_id):
-        st.success(f"Processo ID {process_id} excluído com sucesso!")
+def _delete_process_action(process_id: Any):
+    """Arquiva um processo no banco de dados (não exclui permanentemente)."""
+    with st.spinner("Arquivando processo..."):
+        if db_manager.arquivar_processo(process_id):
+            st.success(f"Processo ID {process_id} arquivado com sucesso! Ele não aparecerá mais na tela principal por padrão.")
+        else:
+            st.error(f"Falha ao arquivar processo ID {process_id}.")
+        
         st.session_state.show_delete_confirm_popup = False
         st.session_state.delete_process_id_to_confirm = None
         st.session_state.delete_process_name_to_confirm = None
-        st.session_state.followup_selected_process_id = None
-        _load_processes()
-        st.rerun()
-    else:
-        st.error(f"Falha ao excluir processo ID {process_id}.")
+        st.session_state.selected_process_data = None 
+        
+        # MELHORIA: Usa atualização parcial em vez de reload completo
+        success = _partial_cache_update_after_edit(process_id, "archive")
+        if not success:
+            # Se a atualização parcial falhou, força reload completo
+            st.session_state.last_db_update = datetime.now()
+            st.session_state.all_processes_raw_data_cache = []
+            st.session_state.consolidated_groups_data_raw_cache = []
+        # Removido st.rerun() - não necessário
 
-def _archive_process_action(process_id: int):
-    """Marca um processo como arquivado no banco de dados."""
-    if db_manager.arquivar_processo(process_id):
-        st.success(f"Processo ID {process_id} arquivado com sucesso!")
-        st.session_state.followup_selected_process_id = None
-        _load_processes()
-        st.rerun()
-    else:
-        st.error(f"Falha ao arquivar processo ID {process_id}.")
-
-def _unarchive_process_action(process_id: int):
-    """Marca um processo como não arquivado (define Status_Arquivado para NULL)."""
-    if db_manager.desarquivar_processo(process_id):
-        st.success(f"Processo ID {process_id} desarquivado com sucesso!")
-        st.session_state.followup_selected_process_id = None
-        _load_processes()
-        st.rerun()
-    else:
-        st.error(f"Falha ao desarquivar processo ID {process_id}.")
-
-def _update_status_action(process_id: int, novo_status: Optional[str]):
-    """Atualiza o Status_Geral de um processo específico."""
-    original_process_data = db_manager.obter_processo_por_id(process_id)
-    original_status = original_process_data['Status_Geral'] if original_process_data else None
-    
-    if db_manager.atualizar_status_processo(process_id, novo_status):
-        st.success(f"Status do processo ID {process_id} atualizado para '{novo_status}'.")
+def _change_process_status_action(process_id: Any, new_status: str, new_observacao: Optional[str]): 
+    """Altera o status e a observação de um processo no banco de dados."""
+    with st.spinner("Atualizando status do processo..."):
         user_info = st.session_state.get('user_info', {'username': 'Desconhecido'})
-        username = user_info.get('username')
-        db_manager.inserir_historico_processo(process_id, "Status_Geral", original_status, novo_status, username)
-        _load_processes()
-        st.rerun()
-    else:
-        st.error(f"Falha ao atualizar status do processo ID {process_id}.")
+        current_username = user_info.get('username', 'Desconhecido')
 
-def _preprocess_dataframe_for_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """
-    Realiza o pré-processamento e padronização dos dados do DataFrame
-    para o formato esperado pelo banco de dados.
-    """
-    df_processed = df.copy()
+        original_process_data_raw = db_manager.obter_processo_por_id(process_id) if isinstance(process_id, int) else db_manager.obter_processo_by_processo_novo(process_id)
+        if not original_process_data_raw:
+            st.error(f"Processo ID {process_id} não encontrado para alteração de status/observação.")
+            return
 
-    column_mapping_to_db = {
-        "Process Reference": "Processo_Novo",
-        "Supplier": "Fornecedor",
-        "Type of Item": "Tipos_de_item",
-        "INV/Invoice": "N_Invoice",
-        "Qtd": "Quantidade",
-        "Value USD": "Valor_USD",
-        "Paid?": "Pago",
-        "P/O": "N_Ordem_Compra",
-        "Purchase Date (YYYY-MM-DD)": "Data_Compra",
-        "Est. Imposts": "Estimativa_Impostos_BR", # Este campo será mantido no DB, mas não exibido na tabela principal
-        "Est. Freight.": "Estimativa_Frete_USD",
-        "Shipping Date (YYYY-MM-DD)": "Data_Embarque",
-        "Shipping Company": "Agente_de_Carga_Novo", 
-        "Status": "Status_Geral",
-        "ETA Pichau (YYYY-MM-DD)": "Previsao_Pichau",
-        "Modal": "Modal",
-        "Navio": "Navio",
-        "Origin": "Origem",
-        "Destination": "Destino",
-        "INCOTERM": "INCOTERM",
-        "Buyer": "Comprador",
-        "Docs Reviewed (Sim/Não)": "Documentos_Revisados",
-        "BL/AWB (Sim/Não)": "Conhecimento_Embarque",
-        "Description Done (Sim/Não)": "Descricao_Feita",
-        "Description Sent (Sim/Não)": "Descricao_Enviada",
-        "Folder Path": "Caminho_da_pasta",
-        "ETA Recinto (YYYY-MM-DD)": "ETA_Recinto",
-        "Data Registro (YYYY-MM-DD)": "Data_Registro",
-        "Obs": "Observacao",
-        "DI Vinculada ID": "DI_ID_Vinculada", # Este campo será mantido no DB, mas não exibido na tabela principal
-        "Nota feita": "Nota_feita", # Nova coluna
-        "Conferido": "Conferido", # Nova coluna, se aplicável
-    }
+        original_process_data = dict(original_process_data_raw)
+        original_status = original_process_data.get('Status_Geral')
+        original_observacao = original_process_data.get('Observacao')
 
-    df_processed = df_processed.rename(columns=column_mapping_to_db, errors='ignore')
+        updates = {}
+        if new_status != original_status:
+            updates["Status_Geral"] = new_status
+        if new_observacao != original_observacao: 
+            updates["Observacao"] = new_observacao
 
-    db_col_names = db_manager.obter_nomes_colunas_db()
-    db_col_names_without_id = [col for col in db_col_names if col != 'id']
-
-    date_columns_to_process = ["Data_Compra", "Data_Embarque", "Previsao_Pichau", "ETA_Recinto", "Data_Registro"]
-    for col in date_columns_to_process:
-        if col in df_processed.columns:
-            df_processed[col] = pd.to_datetime(df_processed[col], errors='coerce', dayfirst=True)
-            df_processed[col] = df_processed[col].dt.strftime('%Y-%m-%d')
-            df_processed[col] = df_processed[col].replace({pd.NaT: None})
-
-    numeric_columns = ["Quantidade", "Valor_USD", "Estimativa_Impostos_BR", "Estimativa_Frete_USD", "DI_ID_Vinculada", "Estimativa_Impostos_Total"] # Adicionado Estimativa_Impostos_Total
-    for col in numeric_columns:
-        if col in df_processed.columns:
-            if df_processed[col].dtype == 'object':
-                df_processed[col] = df_processed[col].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-            df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce').fillna(0)
-            if col == "Quantidade" or col == "DI_ID_Vinculada":
-                df_processed[col] = df_processed[col].astype(int)
+        if updates: 
+            if db_manager.atualizar_processo(process_id, updates):
+                if "Status_Geral" in updates:
+                    db_manager.inserir_historico_processo(
+                        process_id, "Status_Geral", original_status, new_status,
+                        current_username, db_type="Firestore" if db_manager._USE_FIRESTORE_AS_PRIMARY else "SQLite"
+                    )
+                if "Observacao" in updates:
+                    db_manager.inserir_historico_processo(
+                        process_id, "Observacao", original_observacao, new_observacao,
+                        current_username, db_type="Firestore" if db_manager._USE_FIRESTORE_AS_PRIMARY else "SQLite"
+                    )
+                st.success(f"Processo ID {process_id} atualizado com sucesso!")
             else:
-                df_processed[col] = df_processed[col].astype(float)
-
-    yes_no_columns = [
-        "Pago", "Documentos_Revisados", "Conhecimento_Embarque",
-        "Descricao_Feita", "Descricao_Enviada", "Nota_feita", "Conferido" # Adicionada "Nota_feita" e "Conferido"
-    ]
-    for col in yes_no_columns:
-        if col in df_processed.columns:
-            df_processed[col] = df_processed[col].astype(str).str.strip().str.lower()
-            df_processed[col] = df_processed[col].apply(
-                lambda x: "Sim" if x in ["sim", "s"] else ("Não" if x in ["nao", "não", "n"] else None)
-            )
-            
-    for col in df_processed.columns:
-        if col not in numeric_columns + date_columns_to_process + yes_no_columns:
-            df_processed[col] = df_processed[col].astype(str).replace({'': np.nan, 'nan': np.nan}) 
-            df_processed[col] = df_processed[col].apply(lambda x: None if pd.isna(x) else x)
-            
-    final_df_for_db = pd.DataFrame(columns=db_col_names_without_id)
-    for col in db_col_names_without_id:
-        if col in df_processed.columns:
-            final_df_for_db[col] = df_processed[col]
+                st.error(f"Falha ao atualizar processo ID {process_id}.")
         else:
-            final_df_for_db[col] = None
+            st.info("Nenhuma alteração de status ou observação detectada.")
+        
+        st.session_state.show_change_status_popup = False
+        st.session_state.process_id_to_change_status = None
+        st.session_state.process_name_to_change_status = None
+        st.session_state.process_current_observacao = None 
+        
+        # MELHORIA: Usa atualização parcial em vez de reload completo
+        success = _partial_cache_update_after_edit(process_id, "status_change")
+        if not success:
+            # Se a atualização parcial falhou, força reload completo
+            st.session_state.last_db_update = datetime.now()
+            st.session_state.all_processes_raw_data_cache = []
+            st.session_state.consolidated_groups_data_raw_cache = []
+        # Removido st.rerun() - não necessário
 
-    return final_df_for_db
+
+def _display_change_status_popup():
+    """Exibe um pop-up para alterar o status e a observação de um processo."""
+    if not st.session_state.get('show_change_status_popup', False):
+        return
+
+    process_id = st.session_state.get('process_id_to_change_status')
+    process_name = st.session_state.get('process_name_to_change_status')
+
+    if process_id is None:
+        st.session_state.show_change_status_popup = False
+        return
+
+    current_process_data = db_manager.obter_processo_por_id(process_id) if isinstance(process_id, int) else db_manager.obter_processo_by_processo_novo(process_id)
+    current_status = current_process_data.get('Status_Geral') if current_process_data else None
+    current_observacao = current_process_data.get('Observacao', '') if current_process_data else ''
+
+    with st.form(key=f"change_status_form_{process_id}"):
+        st.markdown(f"### Alterar Status e Observação do Processo")
+        st.info(f"Ajuste para o processo: **{process_name}**")
+
+        status_options = db_manager.STATUS_OPTIONS
+        default_index_status = 0
+        if current_status in status_options:
+            default_index_status = status_options.index(current_status)
+        new_status = st.selectbox("Novo Status:", options=status_options, index=default_index_status, key="new_status_selectbox_popup")
+
+        new_observacao = st.text_area("Observação:", value=current_observacao, key="new_observacao_textarea_popup")
+
+        col_apply, col_cancel = st.columns(2)
+        with col_apply:
+            if st.form_submit_button("Aplicar Alterações"):
+                _change_process_status_action(process_id, new_status, new_observacao)
+        with col_cancel:
+            if st.form_submit_button("Cancelar"):
+                st.session_state.show_change_status_popup = False
+                st.session_state.process_id_to_change_status = None
+                st.session_state.process_name_to_change_status = None
+                st.session_state.process_current_observacao = None
+                # Removido st.rerun() - formulários já fazem rerun automaticamente
+
+def _display_edit_checklist_popup():
+    """Exibe um pop-up para alterar os itens de checklist Sim/Não de um processo."""
+    if not st.session_state.get('show_edit_checklist_popup', False):
+        return
+
+    process_id = st.session_state.get('checklist_process_id_to_edit')
+    process_name = st.session_state.get('checklist_process_name_to_edit')
+
+    if process_id is None:
+        st.session_state.show_edit_checklist_popup = False
+        return
+
+    current_process_data = db_manager.obter_processo_por_id(process_id) if isinstance(process_id, int) else db_manager.obter_processo_by_processo_novo(process_id)
+    if not current_process_data:
+        st.error(f"Processo ID {process_id} não encontrado para edição do checklist.")
+        st.session_state.show_edit_checklist_popup = False
+        return
+
+    with st.form(key=f"edit_checklist_form_{process_id}"):
+        st.markdown(f"### Editar Checklist do Processo")
+        st.info(f"Ajustar itens de checklist para: **{process_name}**")
+
+        checklist_fields = {
+            "Pago": "Pago",
+            "Documentos_Revisados": "Docs Revisados",
+            "Conhecimento_Embarque": "Conhecimento Embarque",
+            "Descricao_Feita": "Descrição Feita",
+            "Descricao_Enviada": "Descrição Enviada",
+            "Nota_feita": "Nota Feita",
+            "Conferido": "Conferido"
+        }
+        
+        updated_checklist_values = {}
+        options_sim_nao_vazio = ["➖", "Sim", "Não"] 
+
+        for db_field, display_name in checklist_fields.items():
+            current_value = current_process_data.get(db_field)
+            if str(current_value).lower() == "sim":
+                default_index = 1
+            elif str(current_value).lower() == "não":
+                default_index = 2
+            else:
+                default_index = 0
+
+            selected_option = st.radio(
+                f"{display_name}:",
+                options_sim_nao_vazio,
+                index=default_index,
+                key=f"radio_{db_field}_{process_id}"
+            )
+            if selected_option == "Sim":
+                updated_checklist_values[db_field] = "Sim"
+            elif selected_option == "Não":
+                updated_checklist_values[db_field] = "Não"
+            else:
+                updated_checklist_values[db_field] = None 
+
+
+        col_apply, col_cancel = st.columns(2)
+        with col_apply:
+            if st.form_submit_button("Salvar Checklist"):
+                user_info = st.session_state.get('user_info', {'username': 'Desconhecido'})
+                username = user_info.get('username')
+                
+                changes_for_history = {}
+                for field, new_val in updated_checklist_values.items():
+                    old_val = current_process_data.get(field)
+                    if str(old_val) != str(new_val): 
+                        changes_for_history[field] = (old_val, new_val)
+
+                if db_manager.atualizar_processo(process_id, updated_checklist_values):
+                    st.success(f"Checklist do processo {process_id} atualizado com sucesso!")
+                    for field_name, (old_val, new_val) in changes_for_history.items():
+                        db_manager.inserir_historico_processo(
+                            process_id, field_name, old_val, new_val,
+                            username, db_type="Firestore" if db_manager._USE_FIRESTORE_AS_PRIMARY else "SQLite"
+                        )
+                    
+                    st.session_state.show_edit_checklist_popup = False
+                    st.session_state.checklist_process_id_to_edit = None
+                    
+                    # MELHORIA: Usa atualização parcial em vez de reload completo
+                    success = _partial_cache_update_after_edit(process_id, "checklist_edit")
+                    if not success:
+                        # Se a atualização parcial falhou, força reload completo
+                        st.session_state.last_db_update = datetime.now()
+                        st.session_state.all_processes_raw_data_cache = []
+                        st.session_state.consolidated_groups_data_raw_cache = []
+                    # Removido st.rerun() - não necessário
+                else:
+                    st.error(f"Falha ao atualizar checklist do processo {process_id}.")
+        with col_cancel:
+            if st.form_submit_button("Cancelar"):
+                st.session_state.show_edit_checklist_popup = False
+                st.session_state.checklist_process_id_to_edit = None
+                # Removido st.rerun() - não necessário
 
 def _open_filter_search_popup():
     """Abre um pop-up para a seleção de filtros e termos de pesquisa."""
     st.session_state.show_filter_search_popup = True
-    st.rerun()
+    # Removido st.rerun() - não necessário
 
 def _display_filter_search_popup():
     """Exibe o pop-up de filtros e pesquisa."""
@@ -430,856 +1135,1482 @@ def _display_filter_search_popup():
         return
 
     with st.form(key="filter_search_form"):
-        st.markdown("### Filtros e Pesquisa de Processos")
+        st.markdown("### Mais Filtros e Pesquisa de Processos")
 
-        current_filter_value = st.session_state.get('followup_status_filter', 'Todos')
-        try:
-            default_index = st.session_state.followup_all_status_options.index(current_filter_value)
-        except ValueError:
-            default_index = 0
+        col_left, col_right = st.columns(2)
 
-        st.selectbox(
-            "Filtrar por Status:",
-            options=st.session_state.followup_all_status_options,
-            index=default_index,
-            key="popup_followup_status_filter"
-        )
+        with col_left:
+            st.text_input("Pesquisar N. Invoice:", key="popup_followup_search_n_invoice",
+                          value=st.session_state.get('followup_popup_search_terms', {}).get('N_Invoice', '') or "")
+            st.text_input("Pesquisar Modal:", key="popup_followup_search_Modal",
+                          value=st.session_state.get('followup_popup_search_terms', {}).get('Modal', '') or "")
+            st.text_input("Pesquisar Origem:", key="popup_followup_search_Origem",
+                          value=st.session_state.get('followup_popup_search_terms', {}).get('Origem', '') or "")
+            
+            current_eta_recinto_start = st.session_state.get('followup_popup_search_terms', {}).get('ETA_Recinto_Start', None)
+            current_eta_recinto_end = st.session_state.get('followup_popup_search_terms', {}).get('ETA_Recinto_End', None)
+            # Convert string dates back to datetime.date objects for date_input
+            if current_eta_recinto_start and isinstance(current_eta_recinto_start, str):
+                try: current_eta_recinto_start = datetime.strptime(current_eta_recinto_start, "%Y-%m-%d").date()
+                except ValueError: current_eta_recinto_start = None
+            if current_eta_recinto_end and isinstance(current_eta_recinto_end, str):
+                try: current_eta_recinto_end = datetime.strptime(current_eta_recinto_end, "%Y-%m-%d").date()
+                except ValueError: current_eta_recinto_end = None
 
-        st.text_input("Pesquisar Processo:", key="popup_followup_search_processo_novo", 
-                      value=st.session_state.get('followup_search_terms', {}).get('Processo_Novo', '') or "")
-        st.text_input("Pesquisar Fornecedor:", key="popup_followup_search_fornecedor",
-                      value=st.session_state.get('followup_search_terms', {}).get('Fornecedor', '') or "")
-        st.text_input("Pesquisar Nº Invoice:", key="popup_followup_search_n_invoice",
-                      value=st.session_state.get('followup_search_terms', {}).get('N_Invoice', '') or "")
-        
+            st.date_input("Data no Recinto (Início):", value=current_eta_recinto_start, key="popup_followup_search_eta_recinto_start", format="DD/MM/YYYY")
+            st.date_input("Data no Recinto (Fim):", value=current_eta_recinto_end, key="popup_followup_search_eta_recinto_end", format="DD/MM/YYYY")
+
+
+        with col_right:
+            st.text_input("Pesquisar Fornecedor:", key="popup_followup_search_fornecedor",
+                          value=st.session_state.get('followup_popup_search_terms', {}).get('Fornecedor', '') or "")
+            st.text_input("Pesquisar Tipos de Item:", key="popup_followup_search_Tipos_de_item",
+                          value=st.session_state.get('followup_popup_search_terms', {}).get('Tipos_de_item', '') or "")
+            st.text_input("Pesquisar Navio:", key="popup_followup_search_Navio",        
+                          value=st.session_state.get('followup_popup_search_terms', {}).get('Navio', '') or "")
+            st.text_input("Pesquisar Comprador:", key="popup_followup_search_Comprador",
+                          value=st.session_state.get('followup_popup_search_terms', {}).get('Comprador', '') or "")
+
+            current_data_registro_start = st.session_state.get('followup_popup_search_terms', {}).get('Data_Registro_Start', None)
+            current_data_registro_end = st.session_state.get('followup_popup_search_terms', {}).get('Data_Registro_End', None)
+            # Convert string dates back to datetime.date objects for date_input
+            if current_data_registro_start and isinstance(current_data_registro_start, str):
+                try: current_data_registro_start = datetime.strptime(current_data_registro_start, "%Y-%m-%d").date()
+                except ValueError: current_data_registro_start = None
+            if current_data_registro_end and isinstance(current_data_registro_end, str):
+                try: current_data_registro_end = datetime.strptime(current_data_registro_end, "%Y-%m-%d").date()
+                except ValueError: current_data_registro_end = None
+
+            st.date_input("Data de Registro (Início):", value=current_data_registro_start, key="popup_followup_search_data_registro_start", format="DD/MM/YYYY")
+            st.date_input("Data de Registro (Fim):", value=current_data_registro_end, key="popup_followup_search_data_registro_end", format="DD/MM/YYYY")
+
+
         col_buttons_popup = st.columns(2)
         with col_buttons_popup[0]:
-            if st.form_submit_button("Aplicar Filtros"):
-                st.session_state.followup_status_filter = st.session_state.popup_followup_status_filter
-                st.session_state.followup_search_terms = {
-                    "Processo_Novo": st.session_state.popup_followup_search_processo_novo,
-                    "Fornecedor": st.session_state.popup_followup_search_fornecedor,
+            if st.form_submit_button("Aplicar Mais Filtros"):
+                search_terms_to_apply = {
                     "N_Invoice": st.session_state.popup_followup_search_n_invoice,
+                    "Fornecedor": st.session_state.popup_followup_search_fornecedor,
+                    "Tipos_de_item": st.session_state.popup_followup_search_Tipos_de_item,
+                    "Modal": st.session_state.popup_followup_search_Modal,
+                    "Navio": st.session_state.popup_followup_search_Navio,
+                    "Origem": st.session_state.popup_followup_search_Origem,
+                    "Comprador": st.session_state.popup_followup_search_Comprador
                 }
-                _load_processes()
-                st.session_state.show_filter_search_popup = False
-                st.rerun()
+
+                if st.session_state.popup_followup_search_eta_recinto_start:
+                    search_terms_to_apply['ETA_Recinto_Start'] = st.session_state.popup_followup_search_eta_recinto_start.strftime("%Y-%m-%d")
+                else:
+                    search_terms_to_apply['ETA_Recinto_Start'] = None
+                
+                if st.session_state.popup_followup_search_eta_recinto_end:
+                    search_terms_to_apply['ETA_Recinto_End'] = st.session_state.popup_followup_search_eta_recinto_end.strftime("%Y-%m-%d")
+                else:
+                    search_terms_to_apply['ETA_Recinto_End'] = None
+
+                if st.session_state.popup_followup_search_data_registro_start:
+                    search_terms_to_apply['Data_Registro_Start'] = st.session_state.popup_followup_search_data_registro_start.strftime("%Y-%m-%d")
+                else:
+                    search_terms_to_apply['Data_Registro_Start'] = None
+
+                if st.session_state.popup_followup_search_data_registro_end:
+                    search_terms_to_apply['Data_Registro_End'] = st.session_state.popup_followup_search_data_registro_end.strftime("%Y-%m-%d")
+                else:
+                    search_terms_to_apply['Data_Registro_End'] = None
+                
+                st.session_state.followup_popup_search_terms = {k: v for k, v in search_terms_to_apply.items() if v} 
+                # Invalida os caches ao mudar os filtros principais
+                st.session_state._invalidate_filter_cache = True 
+                st.session_state.all_processes_raw_data_cache = [] # Limpa os dados em cache para forçar recarregamento
+                st.session_state.consolidated_groups_data_raw_cache = []
+                # Removido st.rerun() - não necessário
         with col_buttons_popup[1]:
-            if st.form_submit_button("Limpar Pesquisa e Filtros"):
-                st.session_state.followup_status_filter = 'Todos'
-                st.session_state.followup_search_terms = {}
-                st.session_state.popup_followup_search_processo_novo = ""
-                st.session_state.popup_followup_search_fornecedor = ""
-                st.session_state.popup_followup_search_n_invoice = ""
-                _load_processes()
-                st.session_state.show_filter_search_popup = False
-                st.rerun()
+            if st.form_submit_button("Limpar Mais Filtros"):
+                st.session_state.followup_popup_search_terms = {} 
+                # Invalida os caches ao mudar os filtros principais
+                st.session_state._invalidate_filter_cache = True 
+                st.session_state.all_processes_raw_data_cache = [] # Limpa os dados em cache para forçar recarregamento
+                st.session_state.consolidated_groups_data_raw_cache = []
+                # Removido st.rerun() - não necessário
         
         if st.form_submit_button("Fechar"):
             st.session_state.show_filter_search_popup = False
-            st.rerun()
+            # Removido st.rerun() - não necessário
 
-def _generate_excel_template():
-    """Gera um arquivo Excel padrão para inserção de dados de Follow-up."""
-    template_columns_map = {
-        "Processo_Novo": "Process Reference",
-        "Fornecedor": "Supplier",
-        "Tipos_de_item": "Type of Item",
-        "N_Invoice": "INV/Invoice",
-        "Qtd": "Qtd",
-        "Value USD": "Value USD",
-        "Paid?": "Paid?",
-        "P/O": "P/O",
-        "Purchase Date (YYYY-MM-DD)": "Purchase Date (YYYY-MM-DD)",
-        "Est. Imposts": "Est. Imposts", # Mantido no template para compatibilidade, mas a exibição principal usará 'Estimativa_Impostos_Total'
-        "Est. Freight.": "Est. Freight.",
-        "Shipping Date (YYYY-MM-DD)": "Shipping Date (YYYY-MM-DD)",
-        "Shipping Company": "Shipping Company", 
-        "Status": "Status",
-        "ETA Pichau (YYYY-MM-DD)": "ETA Pichau (YYYY-MM-DD)",
-        "Modal": "Modal",
-        "Navio": "Navio",
-        "Origin": "Origin",
-        "Destination": "Destination",
-        "INCOTERM": "INCOTERM",
-        "Buyer": "Buyer",
-        "Docs Reviewed (Sim/Não)": "Docs Reviewed (Sim/Não)",
-        "BL/AWB (Sim/Não)": "BL/AWB (Sim/Não)",
-        "Description Done (Sim/Não)": "Description Done (Sim/Não)",
-        "Description Sent (Sim/Não)": "Description Sent (Sim/Não)",
-        "Caminho_da_pasta": "Folder Path",
-        "ETA Recinto (YYYY-MM-DD)": "ETA Recinto (YYYY-MM-DD)",
-        "Data Registro (YYYY-MM-DD)": "Data Registro (YYYY-MM-DD)",
-        "Observacao": "Obs",
-        "DI Vinculada ID": "DI Vinculada ID", # Mantido no template para compatibilidade, mas removido da exibição principal
-        "Nota feita": "Nota feita", # Nova coluna no template
-        "Conferido": "Conferido", # Nova coluna no template
-        "Estimativa Impostos Total": "Estimativa_Impostos_Total", # Nova coluna no template
-    }
-
-    df_template = pd.DataFrame(columns=list(template_columns_map.values()))
-
-    example_row = {
-        "Process Reference": "EXEMPLO-001",
-        "Supplier": "Exemplo Fornecedor Ltda.",
-        "Type of Item": "Eletrônicos",
-        "INV/Invoice": "INV-2023-001",
-        "Qtd": 100,
-        "Value USD": 15000.00,
-        "Paid?": "Não",
-        "P/O": "PO-XYZ-456",
-        "Purchase Date (YYYY-MM-DD)": "2023-01-15",
-        "Est. Imposts": 5000.00,
-        "Est. Freight.": 1200.00,
-        "Shipping Date (YYYY-MM-DD)": "2023-02-01",
-        "Shipping Company": "Agente ABC",
-        "Status": "Processo Criado",
-        "ETA Pichau (YYYY-MM-DD)": "2023-03-10",
-        "Modal": "Maritimo",
-        "Navio": "Navio Exemplo",
-        "Origin": "China",
-        "Destination": "Brasil",
-        "INCOTERM": "FOB",
-        "Buyer": "Comprador X",
-        "Docs Reviewed (Sim/Não)": "Não",
-        "BL/AWB (Sim/Não)": "Sim",
-        "Description Done (Sim/Não)": "Não",
-        "Description Sent (Sim/Não)": "Não",
-        "Folder Path": "C:\\Exemplo\\Pasta\\Processo_EXEMPLO-001",
-        "ETA Recinto (YYYY-MM-DD)": "2023-03-05",
-        "Data Registro (YYYY-MM-DD)": "2023-03-08",
-        "Obs": "Observação de exemplo para o processo.",
-        "DI Vinculada ID": "",
-        "Nota feita": "Não", # Exemplo no template
-        "Conferido": "Não", # Exemplo no template
-        "Estimativa Impostos Total": 5000.00, # Exemplo no template
-    }
-    df_template = pd.DataFrame([example_row], columns=list(template_columns_map.values()))
-
+def _export_processes_to_excel(df_data: pd.DataFrame):
+    """Exporta os dados do DataFrame para um arquivo Excel em memória."""
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_template.to_excel(writer, index=False, sheet_name='Follow-up Template')
-    output.seek(0)
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
 
-    st.download_button(
-        label="Baixar Template Excel",
-        data=output,
-        file_name="followup_template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_excel_template"
-    )
-
-def _get_gspread_client():
-    """Autentica e retorna um cliente gspread para interagir com o Google Sheets."""
-    try:
-        if "gcp_service_account" not in st.secrets:
-            st.error("Credenciais do Google Cloud (gcp_service_account) não encontradas em .streamlit/secrets.toml. Por favor, configure.")
-            return None
-
-        creds_json = st.secrets["gcp_service_account"]
-        
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
-        
-        client = gspread.authorize(creds)
-        return client
-    except Exception as e:
-        logger.error(f"Erro ao autenticar gspread: {e}")
-        st.error(f"Erro de autenticação com Google Sheets. Verifique suas credenciais em .streamlit/secrets.toml e as permissões da conta de serviço. Detalhes: {e}")
-        return None
-
-def _import_from_google_sheets(sheet_url_or_id: str, worksheet_name: str) -> bool:
-    """Importa dados de uma planilha Google Sheets para o banco de dados."""
-    client = _get_gspread_client()
-    if not client:
-        return False
-
-    try:
-        if "https://" in sheet_url_or_id:
-            spreadsheet = client.open_by_url(sheet_url_or_id)
-        else:
-            spreadsheet = client.open_by_key(sheet_url_or_id)
-        
-        worksheet = spreadsheet.worksheet(worksheet_name)
-        
-        data = worksheet.get_all_records(value_render_option='UNFORMATTED_VALUE', head=1)
-        
-        if not data:
-            st.warning(f"A aba '{worksheet_name}' na planilha '{sheet_url_or_id}' está vazia.")
-            return False
-
-        df_from_gsheets = pd.DataFrame(data)
-
-        df_processed = _preprocess_dataframe_for_db(df_from_gsheets)
-
-        if df_processed is None:
-            st.error("Falha no pré-processamento dos dados do Google Sheets.")
-            return False
-
-        if db_manager.importar_csv_para_db_from_dataframe(df_processed):
-            st.success("Dados do Google Sheets importados com sucesso! A tabela foi recarregada.")
-            _load_processes()
-            return True
-        else:
-            st.error("Falha ao importar dados do Google Sheets para o banco de dados.")
-            return False
+    column_display_names = {
+        "Processo_Novo": "Processo", "Fornecedor": "Fornecedor", "Tipos_de_item": "Tipo de Item",
+        "Observacao": "Observação", "Data_Embarque": "Data Embarque", "ETA_Recinto": "ETA Recinto",
+        "Previsao_Pichau": "Previsão Pichau", "Documentos_Revisados": "Docs Revisados",
+        "Conhecimento_Embarque": "Conhecimento Embarque", "Descricao_Feita": "Descrição Feita",
+        "Descricao_Enviada": "Descrição Enviada", "Nota_feita": "Nota Feita", "N_Invoice": "Nº Invoice",
+        "Quantidade": "Quantidade", "Valor_USD": "Valor (USD)", "Pago": "Pago?",
+        "Nº Ordem Compra": "Nº Ordem Compra", "Data Compra": "Data Compra",
+        "Estimativa_Frete_USD": "Estimativa Frete (USD)", "Agente_de_Carga_Novo": "Agente de Carga",
+        "Status_Geral": "Status Geral", "Modal": "Modal", "Navio": "Navio", "Origem": "Origem",
+        "Destino": "Destino", "INCOTERM": "INCOTERM", "Comprador": "Comprador",
+        "Quantidade_Containers": "Qtd. Containers", "Data_Registro": "Data Registro",
+        "Estimativa_Impostos_Total": "Imp. Totais (R$)", "Estimativa_Dolar_BRL": "Câmbio Estimado (R$)", 
+        "Estimativa_Seguro_BRL": "Estimativa Seguro (R$)", "Estimativa_II_BR": "Estimativa II (R$)", 
+        "Estimativa_IPI_BR": "Estimativa IPI (R$)", "Estimativa_PIS_BR": "Estimativa PIS (R$)", 
+        "Estimativa_COFSINS_BR": "Estimativa COFINS (R$)", "Estimativa_ICMS_BR": "Estimativa ICMS (R$)", 
+        "id": "ID do Processo",
+        "Consolidado": "Consolidado?", 
+        "LCL_Processos_Quantidade": "Quantos processos - LCL", 
+    }
     
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.error(f"Planilha Google Sheets não encontrada com ID/URL: {sheet_url_or_id}. Verifique o ID/URL e as permissões.")
-        logger.error(f"SpreadsheetNotFound: {sheet_url_or_id}")
-        return False
-    except gspread.exceptions.WorksheetNotFound:
-        st.error(f"Aba '{worksheet_name}' não encontrada na planilha. Verifique o nome da aba.")
-        logger.error(f"WorksheetNotFound: {worksheet_name}")
-        return False
+    cols_to_export = [col for col in column_display_names.keys() if col in df_data.columns]
+    df_export = df_data[cols_to_export].copy()
+    df_export = df_export.rename(columns={k: v for k, v in column_display_names.items() if k in df_export.columns})
+
+    date_cols = ["Data Embarque", "ETA Recinto", "Previsão Pichau", "Data Compra", "Data Registro"]
+    currency_usd_cols = ["Valor (USD)", "Estimativa Frete (USD)"]
+    currency_brl_cols = ["Imp. Totais (R$)", "Câmbio Estimado (R$)", "Estimativa Seguro (R$)", "Estimativa II (R$)", 
+                         "Estimativa IPI (R$)", "Estimativa PIS (R$)", 
+                         "Estimativa COFINS (R$)", "Estimativa ICMS (R$)"] 
+    
+    for col in date_cols:
+        if col in df_export.columns:
+            df_export[col] = df_export[col].apply(lambda x: _format_date_display(x) if pd.notna(x) else '')
+            
+    for col in currency_usd_cols:
+        if col in df_export.columns:
+            df_export[col] = pd.to_numeric(df_export[col], errors='coerce').fillna(0).apply(lambda x: f"{x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
+
+    for col in currency_brl_cols:
+        if col in df_export.columns:
+            df_export[col] = pd.to_numeric(df_export[col], errors='coerce').fillna(0).apply(lambda x: f"R$ {x:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
+    
+    df_export.to_excel(writer, index=False, sheet_name='Processos de Importação')
+    writer.close()
+    output.seek(0)
+    return output
+
+# Cores para os status (revisadas para um visual más agradável e claro)
+STATUS_COLORS_HEX = {
+    'Encerrado': "#FFFDFD",        # Cinza Neutro
+    'Chegada Pichau': "#636464",   # Azul Padrão
+    'Agendado': "#888888",         # Roxo Suave
+    'Liberado': '#28A745',         # Verde Sucesso
+    'Registrado': "#CFE600",       # Azul Ciano Claro
+    'Chegada Recinto': "#0787FF",  # Amarelo Alerta
+    'Embarcado': '#DC3545',        # Vermelho Erro/Perigo
+    'Limbo Consolidado': '#6C757D',# Cinza Chumbo
+    'Limbo Saldo': "#0A6D05",      # Cinza Chumbo
+    'Pré Embarque': '#20C997',     # Verde Água Suave
+    'Verificando': '#FD7E14',      # Laranja Alerta
+    'Em Produção': '#6F42C1',      # Roxo Médio
+    'Processo Criado': '#A9A9A9',  # Cinza Claro para o padrão
+    'Arquivados': '#DC3545',       # Vermelho para status "Arquivado"
+    'Sem Status': '#343A40',       # Cinza Escuro para campos vazios/desconhecidos
+    'Status Desconhecido': '#343A40', # Cinza Escuro
+}
+
+def _get_text_color(background_hex_color: str) -> str:
+    """Determina a cor do texto (branco ou preto) com base na cor de fundo para melhor contraste."""
+    # Lógica para determinar a cor do texto (simplificada para exemplo)
+    # Uma implementação mais robusta calcularia a luminância
+    if background_hex_color in ['#FFFDFD', '#CFE600']: # Cores claras
+        return '#333333' # Texto escuro
+    return '#F8F8F8' # Texto claro
+
+
+def _format_status_display(status_geral: str, status_arquivado: str) -> Tuple[str, str]:
+    """Formata o texto e a cor do status para exibição no card."""
+    display_status = status_geral
+    
+    if status_arquivado == 'Arquivado':
+        display_status = "Arquivado"
+        status_color = STATUS_COLORS_HEX.get('Arquivados', '#DC3545') # Vermelho para arquivados
+    else:
+        status_color = STATUS_COLORS_HEX.get(status_geral, '#343A40') # Default para cinza escuro
+
+    return display_status, status_color
+
+def _format_checkbox_display(value: Any) -> str:
+    """Formata valores para ícones de checkbox (✅, ❌, ➖)."""
+    if str(value).lower() == "sim":
+        return "✅"
+    elif str(value).lower() == "não":
+        return "❌"
+    return "➖"
+
+@st.cache_resource # Cacheia as permissões do usuário para evitar recomputação
+def _get_cached_user_permissions():
+    """Obtém e cacheia as permissões do usuário."""
+    user_info = st.session_state.get('user_info', {})
+    is_admin = user_info.get('is_admin', False)
+    allowed_screens = user_info.get('allowed_screens', [])
+    
+    # Mapeia telas para permissões específicas, se necessário
+    permission_map = {
+        "Consulta de Processo": "Consulta de Processo" in allowed_screens,
+        "Atualizar Dados de Processo": "Atualizar Dados de Processo" in allowed_screens,
+        "Formulário Processo": "Formulário Processo" in allowed_screens,
+        "Vincular Consolidado": "Vincular Consolidado" in allowed_screens,
+        "Gerenciamento de Processos em Massa": "Gerenciamento de Processos em Massa" in allowed_screens,
+        "Ações do Processo (Popover)": "Ações do Processo (Popover)" in allowed_screens,
+        "Mais Opções (Popover)": "Mais Opções (Popover)" in allowed_screens,
+        "Exportar Excel": "Exportar Excel" in allowed_screens,
+    }
+    
+    return {
+        "is_admin": is_admin,
+        "user_allowed_screens": allowed_screens,
+        "permission_map": permission_map
+    }
+
+def _reset_cards_loading_state():
+    """Reseta o estado de carregamento dos cards para todos os status, mas só se ainda não existe (evita sobrescrever após load more)."""
+    if 'loaded_cards_per_status' not in st.session_state:
+        st.session_state.loaded_cards_per_status = {status: INITIAL_CARDS_PER_CHUNK for status in [item['status'] for item in st.session_state.sorted_all_expander_keys]}
+        # print('[DEBUG] Inicializou loaded_cards_per_status') # Comentado para evitar poluir o log
+    if 'show_load_more_buttons' not in st.session_state:
+        st.session_state.show_load_more_buttons = {status: True for status in [item['status'] for item in st.session_state.sorted_all_expander_keys]}
+        # print('[DEBUG] Inicializou show_load_more_buttons') # Comentado para evitar poluir o log
+
+def _load_more_cards_for_status(status: str):
+    """Carrega mais cards para um status específico."""
+    current_loaded = st.session_state.loaded_cards_per_status.get(status, INITIAL_CARDS_PER_CHUNK)
+    st.session_state.loaded_cards_per_status[status] = current_loaded + st.session_state.cards_per_chunk
+    # print(f"[DEBUG] Carregando mais cards para status: {status} (total agora: {st.session_state.loaded_cards_per_status[status]})") # Comentado para evitar poluir o log
+    st.rerun() # O Streamlit fará o rerun automaticamente
+
+def _reset_main_filters():
+    """Reseta os filtros principais de status e pesquisa de processo."""
+    st.session_state.followup_selected_statuses = ['Todos']
+    st.session_state.followup_main_process_search_term = ''
+    st.session_state.followup_popup_search_terms = {}
+    st.session_state.last_db_update = datetime.now() # Força recarregamento de todos os caches
+    
+    # Limpa os dados em cache para forçar recarregamento completo
+    st.session_state.all_processes_raw_data_cache = []
+    st.session_state.consolidated_groups_data_raw_cache = []
+    # Removido st.rerun() - não necessário
+
+def _toggle_view_mode():
+    """Alterna o modo de visualização entre 'cards' e 'tables'."""
+    if st.session_state.view_mode == 'cards':
+        st.session_state.view_mode = 'tables' 
+    else:
+        st.session_state.view_mode = 'cards'
+    # Removido st.rerun() - não necessário
+
+def _partial_cache_update_after_edit(process_id: Any, update_type: str):
+    """
+    Tenta atualizar parcialmente o cache de dados brutos após uma edição.
+    Retorna True se a atualização parcial foi bem-sucedida, False caso contrário (forçando um reload completo).
+    """
+    try:
+        updated_process_data = db_manager.obter_processo_por_id(process_id) if isinstance(process_id, int) else db_manager.obter_processo_by_processo_novo(process_id)
+        if not updated_process_data:
+            logger.warning(f"Processo {process_id} não encontrado após edição. Forçando recarregamento completo.")
+            return False
+
+        found_and_updated = False
+        # Atualiza o cache de dados brutos
+        for i, proc in enumerate(st.session_state.all_processes_raw_data_cache):
+            if proc.get('id') == process_id:
+                st.session_state.all_processes_raw_data_cache[i] = updated_process_data
+                found_and_updated = True
+                break
+        
+        # Se o processo não foi encontrado no cache principal, pode ser um novo processo (no caso de adição)
+        # ou um processo que foi filtrado e não está no cache atual. Neste caso, força recarregamento completo.
+        if not found_and_updated and update_type != "add":
+            logger.warning(f"Processo {process_id} não encontrado no cache para atualização parcial. Forçando recarregamento completo.")
+            return False
+        elif update_type == "add": # Se for uma adição, adiciona ao cache
+            st.session_state.all_processes_raw_data_cache.append(updated_process_data)
+            logger.info(f"Novo processo {process_id} adicionado ao cache.")
+
+        # Invalida os caches de filtro e preparação do expander para que sejam recomputados com os dados atualizados
+        st.session_state._invalidate_filter_cache = True
+        return True
     except Exception as e:
-        st.error(f"Erro ao ler ou importar dados do Google Sheets: {e}")
-        logger.exception("Erro inesperado ao importar do Google Sheets.")
+        logger.error(f"Erro na atualização parcial do cache para processo {process_id}: {e}")
         return False
 
-def _display_import_popup():
-    """Exibe o pop-up unificado para importação via Google Sheets ou Excel/CSV."""
-    if not st.session_state.get('show_import_popup', False):
-        return
+def _optimized_reload_after_process_edit(process_identifier: Any):
+    """
+    Callback otimizado para recarregar processos após edição no formulário.
+    Tenta uma atualização parcial do cache. Se falhar, força um recarregamento completo.
+    """
+    success = _partial_cache_update_after_edit(process_identifier, "edit")
+    if not success:
+        st.session_state.last_db_update = datetime.now()
+        st.session_state.all_processes_raw_data_cache = []
+        st.session_state.consolidated_groups_data_raw_cache = []
+    _call_apply_filters_and_update_session_state() # Re-aplica filtros e prepara UI
 
-    with st.form(key="import_popup_form"):
-        st.markdown("### Opções de Importação")
+def _render_consolidated_group_card(group_data: Dict[str, Any], unique_id_for_key: str):
+    """Renderiza um card para um grupo consolidado com informações agregadas e layout similar ao card individual."""
+    principal_id = group_data.get('principal_id', 'N/A')
+    members_data = group_data.get('members_data', [])
+    
+    # Encontra o processo principal para pegar status e previsão
+    principal_process_data = next((m for m in members_data if str(m.get('id')) == str(principal_id)), None)
+    
+    group_status = principal_process_data.get('Status_Geral', 'Consolidado') if principal_process_data else 'Consolidado'
+    previsao_pichau = _format_date_display(principal_process_data.get('Previsao_Pichau')) if principal_process_data else 'N/A'
+    
+    display_status, status_display_color = _format_status_display(group_status, 'Não Arquivado') # Grupos não são "arquivados" diretamente
 
-        st.markdown("#### Importar do Google Sheets")
-        st.info("Insira a URL ou ID da planilha e o nome da aba.")
-        st.session_state.gsheets_url_id = st.text_input("URL ou ID da Planilha:", value=st.session_state.gsheets_url_id, key="popup_gsheets_url_id")
-        st.session_state.gsheets_worksheet_name = st.text_input("Nome da Aba:", value=st.session_state.gsheets_worksheet_name, key="popup_gsheets_worksheet_name")
+    # Agregação de dados dos membros
+    total_quantidade = sum(safe_float(member.get('Quantidade', 0)) for member in members_data)
+    total_valor_usd = sum(safe_float(member.get('Valor_USD', 0.0)) for member in members_data)
+    
+    unique_fornecedores = set(member.get('Fornecedor', 'N/A') for member in members_data if member.get('Fornecedor'))
+    fornecedores_display = ", ".join(unique_fornecedores) if unique_fornecedores else "N/A"
+    
+    unique_invoices = set(member.get('N_Invoice', 'N/A') for member in members_data if member.get('N_Invoice'))
+    invoices_display = ", ".join(unique_invoices) if unique_invoices else "N/A"
+
+    earliest_data_compra = None
+    earliest_data_embarque = None
+    
+    for member in members_data:
+        if member.get('Data_Compra'):
+            try:
+                current_date = datetime.strptime(member['Data_Compra'], "%Y-%m-%d")
+                if earliest_data_compra is None or current_date < earliest_data_compra:
+                    earliest_data_compra = current_date
+            except ValueError:
+                pass
+        if member.get('Data_Embarque'):
+            try:
+                current_date = datetime.strptime(member['Data_Embarque'], "%Y-%m-%d")
+                if earliest_data_embarque is None or current_date < earliest_data_embarque:
+                    earliest_data_embarque = current_date
+            except ValueError:
+                pass
+
+    earliest_data_compra_display = _format_date_display(earliest_data_compra.strftime("%Y-%m-%d")) if earliest_data_compra else 'N/A'
+    earliest_data_embarque_display = _format_date_display(earliest_data_embarque.strftime("%Y-%m-%d")) if earliest_data_embarque else 'N/A'
+
+    # Mock de dados de checklist para o grupo consolidado (poderiam ser agregados dos membros)
+    # Para simplificar, vamos usar um status padrão para o grupo consolidado
+    pago = "➖"
+    docs_revisados = "➖"
+    conhecimento_embarque = "➖"
+    descricao_feita = "➖"
+    descricao_enviada = "➖"
+    nota_feita = "➖"
+    conferido = "➖"
+
+    modal_icon = '📦' # Ícone de caixa para grupo consolidado
+    
+    with st.container():
+        st.markdown(f"<div class='process-card-container-inner' style='padding: 5px; margin-bottom: 2px;'>", unsafe_allow_html=True)
+
+        col_main_info, col_dates_status, col_docs_status, col_actions = st.columns([0.15, 0.25, 0.35, 0.05])
+        with col_main_info:
+            st.markdown(f"<div style='font-size: 2.5em; text-align: center; color: #F8F8F8;'>{modal_icon}</div>", unsafe_allow_html=True)
+            st.markdown(f"""
+                <div style='color: #E0E0E0; text-align: center;'>
+                    <strong>{principal_id}</strong><br>
+                    <small>({len(members_data)} processos)</small><br>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col_dates_status:
+            st.markdown(f"""
+                <div style='color: #E0E0E0;'>
+                    <span class="process-card-status-text" style="background-color: {status_display_color}; color: {_get_text_color(status_display_color)}; font-size: 1.2em;">{display_status}</span><br>
+                    <strong>Qtd Total:</strong> {_format_int_display(total_quantidade)} | <strong>Valor Total (US$):</strong> {_format_usd_display(total_valor_usd).replace('US$', '')}<br>
+                    <small>Nº Invoices: {invoices_display}</small><br>
+                    <strong>Previsão Pichau (Principal):</strong> {previsao_pichau}<br>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col_docs_status:
+            st.markdown(f"""
+                <div style='color: #E0E0E0;'>
+                    <strong>Fornecedores:</strong> {fornecedores_display}<br>
+                    <strong>Data Compra (Earliest):</strong> {earliest_data_compra_display}<br>
+                    <strong>Data Embarque (Earliest):</strong> {earliest_data_embarque_display}<br>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col_actions:
+            # Para o card consolidado, podemos ter ações específicas para o grupo
+            # Por exemplo, ver detalhes do grupo, desvincular, etc.
+            # Por enquanto, deixaremos um popover genérico
+            with st.popover("⚙️", help="Opções do Grupo Consolidado", use_container_width=True):
+                st.button("Ver Detalhes do Grupo (Em breve) 🔎", key=f"menu_query_group_{unique_id_for_key}")
+                # Adicione outras ações específicas para o grupo aqui, se necessário
+
+        col1_empty, col1_docs_status, col3_empty = st.columns([0.08, 0.32, 0.11])
+        with col1_docs_status:
+            st.markdown(f"""
+                        <div style='display: flex; justify-content: space-around; font-size: 0.9em; color: #E0E0E0;'>
+                            <span>Pago: <span class="process-card-doc-status">{pago}</span></span>
+                            <span>Docs Rev.: <span class="process-card-doc-status">{docs_revisados}</span></span>
+                            <span>Conh. Emb.: <span class="process-card-doc-status">{conhecimento_embarque}</span></span>                  
+                            <span>Desc. Feita: <span class="process-card-doc-status">{descricao_feita}</span></span>
+                            <span>Nota feita: <span class="process-card-doc-status">{nota_feita}</span></span>
+                            <span>Conferido: <span class="process-card-doc-status">{conferido}</span></span>
+                        </div>
+                    """, unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Seção de detalhes dos membros (ainda dentro do card consolidado, mas como um expander)
+        st.markdown(f"""
+            <details style='color: #E0E0E0; margin-top: 10px;'>
+                <summary>Ver Processos Membros (Detalhes)</summary>
+                <div style='max-height: 250px; overflow-y: auto; border: 1px solid #444; padding: 10px; border-radius: 5px; background-color: #2A2A2A; margin-top: 10px;'>
+        """, unsafe_allow_html=True)
         
-        confirm_gsheets_overwrite = st.checkbox("Confirmar substituição de dados no DB (Google Sheets)", key="popup_confirm_gsheets_overwrite")
-
-        if st.form_submit_button("Importar Planilha do Google Sheets"):
-            if st.session_state.popup_gsheets_url_id and st.session_state.popup_gsheets_worksheet_name:
-                if confirm_gsheets_overwrite:
-                    if _import_from_google_sheets(st.session_state.popup_gsheets_url_id, st.session_state.popup_gsheets_worksheet_name):
-                        st.session_state.show_import_popup = False
-                        st.rerun()
-                else:
-                    st.warning("Marque a caixa de confirmação para importar do Google Sheets.")
-            else:
-                st.warning("Por favor, forneça a URL/ID da Planilha e o Nome da Aba para Google Sheets.")
-
-        st.markdown("---")
-
-        st.markdown("#### Importar de Arquivo Excel/CSV Local")
-        uploaded_file = st.file_uploader("Escolha um arquivo (.csv, .xls, .xlsx)", type=["csv", "xls", "xlsx"], key="file_uploader_local")
+        for member in members_data:
+            st.markdown(f"""
+                <div style='margin-bottom: 8px; padding: 8px; border-bottom: 1px dashed #444;'>
+                    - <strong>Processo:</strong> {member.get('Processo_Novo', 'N/A')}<br>
+                    &nbsp;&nbsp;<strong>Fornecedor:</strong> {member.get('Fornecedor', 'N/A')}<br>
+                    &nbsp;&nbsp;<strong>Status:</strong> {member.get('Status_Geral', 'Sem Status')}<br>
+                    &nbsp;&nbsp;<strong>Nº Invoice:</strong> {member.get('N_Invoice', 'N/A')}<br>
+                    &nbsp;&nbsp;<strong>Qtd:</strong> {_format_int_display(member.get('Quantidade', 0))} | <strong>Valor (US$):</strong> {_format_usd_display(member.get('Valor_USD', 0.0))}
+                </div>
+            """, unsafe_allow_html=True)
         
-        confirm_local_overwrite = st.checkbox("Confirmar substituição de dados no DB (Arquivo Local)", key="popup_confirm_local_overwrite")
+        st.markdown("""
+                </div>
+            </details>
+        """, unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        if st.form_submit_button("Importar Arquivo Local"):
-            if uploaded_file is not None:
-                if confirm_local_overwrite:
-                    if _import_file_action(uploaded_file):
-                        st.session_state.show_import_popup = False
-                        st.rerun()
-                else:
-                    st.warning("Marque a caixa de confirmação para importar o arquivo local.")
-            else:
-                st.warning("Por favor, selecione um arquivo para importação local.")
-        
-        if st.form_submit_button("Fechar Opções de Importação"):
-            st.session_state.show_import_popup = False
-            st.rerun()
 
-    st.markdown("---")
-    _generate_excel_template()
+def _render_process_card(row_dict: Dict[str, Any], unique_id_for_key: str):
+    """Renderiza um único card de processo."""
+    
+    # OTIMIZAÇÃO: Usa cache de permissões para reduzir cálulos repetitivos
+    permissions = _get_cached_user_permissions()
+    is_admin = permissions["is_admin"]
+    
+    # Função auxiliar otimizada para verificar permissão
+    def has_permission(screen_name: str) -> bool:
+        # Garante que administradores sempre veem o popover
+        if is_admin:
+            return True
+        # Se a permissão está explicitamente no mapa, respeita
+        if screen_name in permissions["permission_map"]:
+            return permissions["permission_map"][screen_name]
+        # Se não está no mapa, verifica se está na lista de telas permitidas
+        return screen_name in permissions["user_allowed_screens"]
 
-def _open_mass_edit_popup():
-    """Abre o pop-up para edição em massa de processos."""
-    st.session_state.show_mass_edit_popup = True
-    if 'mass_edit_process_names_input' not in st.session_state:
-        st.session_state.mass_edit_process_names_input = ""
-    if 'mass_edit_found_processes' not in st.session_state:
-        st.session_state.mass_edit_found_processes = []
-    st.rerun()
+    # Extrai dados do processo com tratamento de valores padrão
+    processo_novo = row_dict.get('Processo_Novo', 'N/A')
+    status_geral = row_dict.get('Status_Geral', 'Sem Status')
+    modal = row_dict.get('Modal', 'Sem Modal')
+    fornecedor = row_dict.get('Fornecedor', 'N/A')
+    n_invoice = row_dict.get('N_Invoice', 'N/A')
+    quantidade = row_dict.get('Quantidade', 0)
+    valor_usd = row_dict.get('Valor_USD', 0.0)
+    
+    # OTIMIZAÇÃO: Formatação de datas otimizada para reduzir chamadas de função
+    data_compra = _format_date_display(row_dict.get('Data_Compra'))
+    data_embarque = _format_date_display(row_dict.get('Data_Embarque'))
+    eta_recinto = _format_date_display(row_dict.get('ETA_Recinto'))
+    previsao_pichau = _format_date_display(row_dict.get('Previsao_Pichau'))
+    
+    observacao = row_dict.get('Observacao', 'N/A')
+    consolidado_flag = row_dict.get('Consolidado', 'Não') 
 
-def _display_mass_edit_popup():
-    """Exibe o pop-up para edição em massa de processos."""
-    if not st.session_state.get('show_mass_edit_popup', False):
-        return
+    # OTIMIZAÇÃO: Formatação de status com função auxiliar
+    status_arquivado = row_dict.get('Status_Arquivado', 'Não Arquivado')
+    display_status, status_display_color = _format_status_display(status_geral, status_arquivado)
 
-    with st.form(key="mass_edit_form"):
-        st.markdown("### Editar Múltiplos Processos")
+    # OTIMIZAÇÃO: Formatação de checkboxes com função auxiliar
+    pago = _format_checkbox_display(row_dict.get('Pago', ''))
+    docs_revisados = _format_checkbox_display(row_dict.get('Documentos_Revisados', ''))
+    conhecimento_embarque = _format_checkbox_display(row_dict.get('Conhecimento_Embarque', ''))
+    descricao_feita = _format_checkbox_display(row_dict.get('Descricao_Feita', ''))
+    descricao_enviada = _format_checkbox_display(row_dict.get('Descricao_Enviada', ''))
+    nota_feita = _format_checkbox_display(row_dict.get('Nota_feita', ''))
+    conferido = _format_checkbox_display(row_dict.get('Conferido', ''))
 
-        st.markdown("#### 1. Inserir Processos para Edição")
-        process_names_input = st.text_area(
-            "Insira os nomes dos processos (um por linha):",
-            value=st.session_state.mass_edit_process_names_input,
-            height=150,
-            key="mass_edit_process_names_textarea"
+    modal_icon = '✈️' if modal == 'Aéreo' else ('🚢' if modal == 'Maritimo' else ('📦' if modal == 'Consolidado' else '➖')) 
+    
+    with st.container():
+        st.markdown(f"<div class='process-card-container-inner' style='padding: 5px; margin-bottom: 2px;'>", unsafe_allow_html=True)
+
+        col_main_info, col_dates_status, col_docs_status, col_actions = st.columns([0.15, 0.25, 0.35, 0.05])
+        with col_main_info:
+            st.markdown(f"<div style='font-size: 2.5em; text-align: center; color: #F8F8F8;'>{modal_icon}</div>", unsafe_allow_html=True)
+            st.markdown(f"""
+                <div style='color: #E0E0E0; text-align: center;'>
+                    <strong>{processo_novo}</strong><br>
+                    <small>{fornecedor}</small><br>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col_dates_status:
+            st.markdown(f"""
+                <div style='color: #E0E0E0;'>
+                    <span class="process-card-status-text" style="background-color: {status_display_color}; color: {_get_text_color(status_display_color)}; font-size: 1.2em;">{display_status}</span><br>
+                    <strong>Qtd:</strong> {quantidade} | <strong>Valor (US$):</strong> {_format_usd_display(valor_usd).replace('US$', '')}<br>
+                    <small>Nº Invoice: {n_invoice}</small><br>
+                    <strong>Observação:</strong> <span style="color:{'#FF0000' if observacao not in ['N/A', 'None', '', None] else '#E0E0E0'}">{observacao if observacao not in ['N/A', 'None', '', None] else 'Nenhuma'}</span><br>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col_docs_status:
+            st.markdown(f"""
+                <div style='color: #E0E0E0;'>
+                    <br><strong>Data Compra:</strong> {data_compra}<br>
+                    <strong>Data Emb.:</strong> {data_embarque} |
+                    <strong>Prev. Pichau:</strong> {previsao_pichau}
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col_actions:
+            if has_permission("Ações do Processo (Popover)"):
+                with st.popover("⚙️", help="Opções do Processo", use_container_width=True):
+                    if has_permission("Consulta de Processo"):
+                        if st.button("Consultar Processo 🔎", key=f"menu_query_{unique_id_for_key}"):
+                            _navigate_from_card_action("query", row_dict.get('id'))
+                    if has_permission("Atualizar Dados de Processo"):
+                        if st.button("Alterar Status do Processo 🔄", key=f"menu_change_status_{unique_id_for_key}"):
+                            _navigate_from_card_action("change_status", row_dict)
+                        if st.button("Editar Checklist ✅", key=f"menu_edit_checklist_{unique_id_for_key}"):
+                            _navigate_from_card_action("edit_checklist", row_dict)
+                    if has_permission("Formulário Processo"):
+                        if st.button("Editar Processo ✏️", key=f"menu_edit_{unique_id_for_key}"):
+                            _navigate_from_card_action("edit", row_dict)
+                        if st.button("Clonar Processo 🗒️", key=f"menu_clone_{unique_id_for_key}"):
+                            _navigate_from_card_action("clone", row_dict)
+                    if has_permission("Vincular Consolidado"):
+                        if consolidado_flag.lower() != 'sim':
+                            if st.button("Agrupar Consolidado ➕", key=f"menu_group_consolidated_{unique_id_for_key}"):
+                                _navigate_from_card_action("group_consolidated", row_dict)
+                    if has_permission("Gerenciamento de Processos em Massa"):
+                        if st.button("Arquivar Processo 🗑️", key=f"menu_archive_{unique_id_for_key}"):
+                            _navigate_from_card_action("archive", row_dict)
+
+        col1_empty, col1_docs_status, col3_empty = st.columns([0.08, 0.32, 0.11])
+        with col1_docs_status:
+            st.markdown(f"""
+                        <div style='display: flex; justify-content: space-around; font-size: 0.9em; color: #E0E0E0;'>
+                            <span>Pago: <span class="process-card-doc-status">{pago}</span></span>
+                            <span>Docs Rev.: <span class="process-card-doc-status">{docs_revisados}</span></span>
+                            <span>Conh. Emb.: <span class="process-card-doc-status">{conhecimento_embarque}</span></span>                  
+                            <span>Desc. Feita: <span class="process-card-doc-status">{descricao_feita}</span></span>
+                            <span>Nota feita: <span class="process-card-doc-status">{nota_feita}</span></span>
+                            <span>Conferido: <span class="process-card-doc-status">{conferido}</span></span>
+                        </div>
+                    """, unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_payment_card(row_dict: Dict[str, Any], unique_id_for_key: str, di_data=None, frete_internacional_data=None):
+    """Renderiza um card de processo na visualização de pagamentos, exibindo os campos batchados de DI e frete internacional."""
+    permissions = _get_cached_user_permissions()
+    is_admin = permissions["is_admin"]
+    def has_permission(screen_name: str) -> bool:
+        if is_admin:
+            return True
+        if screen_name in permissions["permission_map"]:
+            return permissions["permission_map"][screen_name]
+        return screen_name in permissions["user_allowed_screens"]
+
+    processo_novo = row_dict.get('Processo_Novo', 'N/A')
+    fornecedor = row_dict.get('Fornecedor', 'N/A')
+    status_geral = row_dict.get('Status_Geral', 'Sem Status')
+    status_arquivado = row_dict.get('Status_Arquivado', 'Não Arquivado')
+    display_status, status_display_color = _format_status_display(status_geral, status_arquivado)
+    modal = row_dict.get('Modal', 'Sem Modal')
+    n_invoice = row_dict.get('N_Invoice', 'N/A')
+    quantidade = row_dict.get('Quantidade', 0)
+    valor_usd = row_dict.get('Valor_USD', 0.0)
+    observacao = row_dict.get('Observacao', 'N/A')
+    consolidado_flag = row_dict.get('Consolidado', 'Não')
+    data_compra = _format_date_display(row_dict.get('Data_Compra'))
+    data_embarque = _format_date_display(row_dict.get('Data_Embarque'))
+    previsao_pichau = _format_date_display(row_dict.get('Previsao_Pichau'))
+
+    # Dados de pagamento batchados
+    # Valores brutos para lógica de cor
+    frete_nacional_val = di_data.get('frete_nacional', 0.0) if di_data else 0.0
+    armazenagem_val = di_data.get('armazenagem', 0.0) if di_data else 0.0
+    honorarios_despachante_val = di_data.get('Honorarios_Despachante', 0.0) if di_data else 0.0
+    frete_internacional_val = frete_internacional_data.get('total_aereo_brl', 0.0) if frete_internacional_data else 0.0
+
+    frete_nacional = _format_currency_display(frete_nacional_val)
+    armazenagem = _format_currency_display(armazenagem_val)
+    honorarios_despachante = _format_currency_display(honorarios_despachante_val)
+    di_number = _format_di_number(str(di_data.get('numero_di'))) if di_data else "N/A"
+    frete_internacional_display = _format_currency_display(frete_internacional_val)
+
+    # Cores: verde se >0, vermelho se 0
+    def get_payment_color(valor):
+        try:
+            return '#28a745' if float(valor) > 0 else '#dc3545'
+        except:
+            return '#dc3545'
+
+    cor_frete_int = get_payment_color(frete_internacional_val)
+    cor_frete_nac = get_payment_color(frete_nacional_val)
+    cor_armazenagem = get_payment_color(armazenagem_val)
+    cor_honorarios = get_payment_color(honorarios_despachante_val)
+
+    modal_icon = '✈️' if modal == 'Aéreo' else ('🚢' if modal == 'Maritimo' else ('📦' if modal == 'Consolidado' else '➖'))
+
+    with st.container():
+        st.markdown(f"<div class='process-card-container-inner' style='padding: 5px; margin-bottom: 2px;'>", unsafe_allow_html=True)
+        col_main_info, col_pagamentos, col_actions = st.columns([0.18, 0.65, 0.07])
+        with col_main_info:
+            st.markdown(f"<div style='font-size: 2.5em; text-align: center; color: #F8F8F8;'>{modal_icon}</div>", unsafe_allow_html=True)
+            st.markdown(f"""
+                <div style='color: #E0E0E0; text-align: center;'>
+                    <strong>{processo_novo}</strong><br>
+                    <small>{fornecedor}</small><br>
+                </div>
+            """, unsafe_allow_html=True)
+        with col_pagamentos:
+            st.markdown(f"""
+                <div style='color: #E0E0E0; font-size: 1.1em;'>
+                    <span class="process-card-status-text" style="background-color: {status_display_color}; color: {_get_text_color(status_display_color)}; font-size: 1.2em;">{display_status}</span><br>
+                    <strong>Frete Int.:</strong> <span style='color: {cor_frete_int};'>{frete_internacional_display}</span> &nbsp;|&nbsp; 
+                    <strong>Frete Nac.:</strong> <span style='color: {cor_frete_nac};'>{frete_nacional}</span> &nbsp;|&nbsp; 
+                    <strong>Armazenagem:</strong> <span style='color: {cor_armazenagem};'>{armazenagem}</span> &nbsp;|&nbsp; 
+                    <strong>Honorários Desp.:</strong> <span style='color: {cor_honorarios};'>{honorarios_despachante}</span><br>
+                    <strong>Detalhes DI:</strong> {di_number}
+                </div>
+            """, unsafe_allow_html=True)
+        with col_actions:
+            if has_permission("Ações do Processo (Popover)"):
+                with st.popover("⚙️", help="Opções do Processo"):
+                    if has_permission("Consulta de Processo"):
+                        if st.button("Consultar Processo 🔎", key=f"menu_query_{unique_id_for_key}"):
+                            _navigate_from_card_action("query", row_dict.get('id'))
+                    if has_permission("Atualizar Dados de Processo"):
+                        if st.button("Alterar Status do Processo 🔄", key=f"menu_change_status_{unique_id_for_key}"):
+                            _navigate_from_card_action("change_status", row_dict)
+                        if st.button("Editar Checklist ✅", key=f"menu_edit_checklist_{unique_id_for_key}"):
+                            _navigate_from_card_action("edit_checklist", row_dict)
+                    if has_permission("Formulário Processo"):
+                        if st.button("Editar Processo ✏️", key=f"menu_edit_{unique_id_for_key}"):
+                            _navigate_from_card_action("edit", row_dict)
+                        if st.button("Clonar Processo 🗒️", key=f"menu_clone_{unique_id_for_key}"):
+                            _navigate_from_card_action("clone", row_dict)
+                    if has_permission("Vincular Consolidado"):
+                        if consolidado_flag.lower() != 'sim':
+                            if st.button("Agrupar Consolidado ➕", key=f"menu_group_consolidated_{unique_id_for_key}"):
+                                _navigate_from_card_action("group_consolidated", row_dict)
+                    if has_permission("Gerenciamento de Processos em Massa"):
+                        if st.button("Arquivar Processo 🗑️", key=f"menu_archive_{unique_id_for_key}"):
+                            _navigate_from_card_action("archive", row_dict)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+@st.cache_data(ttl=300) # Cache para os dados de pagamento de um processo
+def _get_payment_data_for_process(process_data: Dict[str, Any], last_db_update: datetime) -> Dict[str, Any]:
+    """
+    Obtém e formata os dados de pagamento para um único processo.
+    Cacheada para evitar chamadas repetitivas ao DB para dados de DI/frete.
+    """
+    process_id = process_data.get('id')
+    process_novo = process_data.get('Processo_Novo', 'N/A')
+
+    # Dados da DI
+    di_data = db_utils.get_declaracao_by_referencia(process_novo)
+    frete_nacional = _format_currency_display(di_data.get('frete_nacional', 0.0)) if di_data else "R$ 0,00"
+    armazenagem = _format_currency_display(di_data.get('armazenagem', 0.0)) if di_data else "R$ 0,00"
+    honorarios_despachante = _format_currency_display(di_data.get('Honorarios_Despachante', 0.0)) if di_data else "R$ 0,00"
+    di_number = _format_di_number(str(di_data.get('numero_di'))) if di_data else "N/A"
+    
+    # Dados de frete internacional
+    frete_internacional_data = db_utils.get_frete_internacional_by_referencia(process_novo)
+    frete_internacional_display = _format_currency_display(frete_internacional_data.get('total_aereo_brl', 0.0)) if frete_internacional_data else "R$ 0,00"
+
+    return {
+        "Processo": process_novo,
+        "Fornecedor": process_data.get('Fornecedor', 'N/A'),
+        "Status": process_data.get('Status_Geral', 'Sem Status'),
+        "Frete Int.": frete_internacional_display,
+        "Frete Nac.": frete_nacional,
+        "Armazenagem": armazenagem,
+        "Honorários Desp.": honorarios_despachante,
+        "Detalhes DI": di_number
+    }
+
+@st.cache_data(ttl=300) # Cache para os dados de pagamento da tabela
+def _prepare_payment_table_data_cached(
+    processes_data: List[Dict[str, Any]],
+    last_db_update: datetime,
+    max_rows: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Prepara os dados para a tabela de pagamentos, processando em lote e usando cache.
+    """
+    # NOVO: Busca em lote (batch) para DI e Frete Internacional
+    table_data = []
+    items_to_process = processes_data[:max_rows] if max_rows is not None else processes_data
+
+    # Coleta todas as referências de processo (Processo_Novo)
+    referencias = [proc.get('Processo_Novo', 'N/A') for proc in items_to_process]
+
+    # Busca em lote (batch) os dados de DI e Frete Internacional
+    # As funções abaixo devem ser implementadas no db_utils
+    di_dict = db_utils.get_declaracoes_by_referencias(referencias)  # Dict[str, dict]
+    frete_int_dict = db_utils.get_fretes_internacionais_by_referencias(referencias)  # Dict[str, dict]
+
+    for process_data in items_to_process:
+        process_id = process_data.get('id')
+        process_novo = process_data.get('Processo_Novo', 'N/A')
+
+        # Dados da DI (batch)
+        di_data = di_dict.get(process_novo)
+        frete_nacional = _format_currency_display(di_data.get('frete_nacional', 0.0)) if di_data else "R$ 0,00"
+        armazenagem = _format_currency_display(di_data.get('armazenagem', 0.0)) if di_data else "R$ 0,00"
+        honorarios_despachante = _format_currency_display(di_data.get('Honorarios_Despachante', 0.0)) if di_data else "R$ 0,00"
+        di_number = _format_di_number(str(di_data.get('numero_di'))) if di_data else "N/A"
+
+        # Dados de frete internacional (batch)
+        frete_internacional_data = frete_int_dict.get(process_novo)
+        frete_internacional_display = _format_currency_display(frete_internacional_data.get('total_aereo_brl', 0.0)) if frete_internacional_data else "R$ 0,00"
+
+        payment_info = {
+            "Processo": process_novo,
+            "Fornecedor": process_data.get('Fornecedor', 'N/A'),
+            "Status": process_data.get('Status_Geral', 'Sem Status'),
+            "Frete Int.": frete_internacional_display,
+            "Frete Nac.": frete_nacional,
+            "Armazenagem": armazenagem,
+            "Honorários Desp.": honorarios_despachante,
+            "Detalhes DI": di_number
+        }
+        table_data.append(payment_info)
+    return table_data
+
+def _initialize_table_loading_state():
+    """Inicializa o estado de carregamento da tabela."""
+    st.session_state.setdefault('table_rows_loaded', TABLE_ROWS_INCREMENT)
+    st.session_state.setdefault('total_rows_available', 0)
+    st.session_state.setdefault('show_load_more_table_button', True)
+
+def _load_more_table_rows():
+    """Carrega mais linhas para a tabela."""
+    st.session_state.table_rows_loaded += TABLE_ROWS_INCREMENT
+    if st.session_state.table_rows_loaded >= st.session_state.total_rows_available:
+        st.session_state.show_load_more_table_button = False
+    # st.rerun() # Streamlit fará o rerun automaticamente
+
+
+def _render_payment_table_with_lazy_loading(sorted_items_in_status: List[Dict[str, Any]], status: str):
+    """
+    Renderiza a tabela de pagamentos com suporte a lazy loading.
+    Carrega apenas as primeiras 50 linhas inicialmente, melhorando o tempo de renderização.
+    
+    Args:
+        sorted_items_in_status: Lista de itens a serem exibidos
+        status: Status atual sendo renderizado
+    """
+    # Inicializa o estado de carregamento se necessário
+    _initialize_table_loading_state()
+    
+    # Atualiza o total de linhas disponíveis
+    st.session_state.total_rows_available = len(sorted_items_in_status)
+    
+    # Define as colunas da tabela de pagamentos
+    table_columns = ["Processo", "Fornecedor", "Status", "Frete Int.", "Frete Nac.", 
+                    "Armazenagem", "Honorários Desp.", "Detalhes DI"]
+    
+    # Prepara os dados limitados ao número atual de linhas carregadas
+    limited_items = sorted_items_in_status[:st.session_state.table_rows_loaded]
+    
+    # Separa itens consolidados e não consolidados
+    non_consolidated_items = [item for item in limited_items if not item.get('_is_consolidated_group')]
+    consolidated_items = [item for item in limited_items if item.get('_is_consolidated_group')]
+    
+    # Prepara os dados da tabela
+    table_data = []
+    
+    # Processa itens não consolidados com lazy loading
+    if non_consolidated_items:
+        payment_rows_non_consolidated = _prepare_payment_table_data_cached(
+            non_consolidated_items,
+            st.session_state.get('last_db_update', datetime.min),
+            max_rows=st.session_state.table_rows_loaded
         )
-        
-        if st.form_submit_button("Buscar Processos"):
-            st.session_state.mass_edit_process_names_input = process_names_input
+        table_data.extend(payment_rows_non_consolidated)
+    
+    # Processa grupos consolidados
+    for item in consolidated_items:
+        if item.get('_is_consolidated_group'):
+            group_data = item['group_data']
+            principal_id = group_data.get('principal_id', 'N/A')
+            principal_process_data = next(
+                (m for m in group_data.get('members_data', []) 
+                 if str(m.get('id')) == str(principal_id)), None)
             
-            st.session_state.mass_edit_found_processes = []
-            if process_names_input:
-                names_to_search = [name.strip() for name in process_names_input.split('\n') if name.strip()]
-                for name in names_to_search:
-                    process_data_row = db_manager.obter_processo_by_processo_novo(name)
-                    
-                    found_entry = {
-                        'Processo_Novo': name,
-                        'ID': 'Não encontrado',
-                        'Status da Busca': 'Não encontrado',
-                        'Status_Geral': 'N/A',
-                        'Observacao': 'N/A',
-                        'Previsao_Pichau': 'N/A',
-                        'Data_Embarque': 'N/A',
-                        'ETA_Recinto': 'N/A',
-                        'Data_Registro': 'N/A',
-                        'Estimativa_Impostos_Total': 'N/A', # Adicionado para exibição na busca em massa
-                        'Nota_feita': 'N/A', # Adicionado para exibição na busca em massa
-                    }
-
-                    if process_data_row:
-                        process_data = dict(process_data_row) 
-                        found_entry['Processo_Novo'] = process_data['Processo_Novo']
-                        found_entry['ID'] = process_data['id']
-                        found_entry['Status da Busca'] = 'Encontrado'
-                        found_entry['Status_Geral'] = process_data.get('Status_Geral', 'N/A')
-                        found_entry['Observacao'] = process_data.get('Observacao', 'N/A')
-                        found_entry['Previsao_Pichau'] = _format_date_display(process_data.get('Previsao_Pichau'))
-                        found_entry['Data_Embarque'] = _format_date_display(process_data.get('Data_Embarque'))
-                        found_entry['ETA_Recinto'] = _format_date_display(process_data.get('ETA_Recinto'))
-                        found_entry['Data_Registro'] = _format_date_display(process_data.get('Data_Registro'))
-                        found_entry['Estimativa_Impostos_Total'] = _format_currency_display(process_data.get('Estimativa_Impostos_Total'))
-                        found_entry['Nota_feita'] = process_data.get('Nota_feita', 'N/A')
-                    
-                    st.session_state.mass_edit_found_processes.append(found_entry)
-            st.rerun()
-
-        if st.session_state.mass_edit_found_processes:
-            st.markdown("#### Resultados da Busca:")
-            df_found_processes = pd.DataFrame(st.session_state.mass_edit_found_processes)
+            # Adiciona cabeçalho do grupo
+            group_header_row = {col: "" for col in table_columns}
+            group_header_row["Processo"] = f"📦 Grupo: {principal_id}"
+            group_header_row["Status"] = (principal_process_data.get('Status_Geral', 'Consolidado') 
+                                        if principal_process_data else 'Consolidado')
+            group_header_row["Detalhes DI"] = f"Membros: {len(group_data.get('members_data', []))}"
+            table_data.append(group_header_row)
             
-            display_cols_search_results = [
-                "Processo_Novo", "Status_Geral", "Observacao", 
-                "Previsao_Pichau", "Data_Embarque", "ETA_Recinto", "Data_Registro", "ID", "Status da Busca", 
-                "Estimativa_Impostos_Total", "Nota_feita" # Adicionado Nota_feita aqui
-            ]
-            
-            display_col_names_map = {
-                "Processo_Novo": "Processo",
-                "Status_Geral": "Status Geral",
-                "Observacao": "Observação",
-                "Previsao_Pichau": "Previsão na Pichau",
-                "Data_Embarque": "Data do Embarque",
-                "ETA_Recinto": "ETA no Recinto",
-                "Data de Registro": "Data de Registro",
-                "ID": "ID do DB",
-                "Status da Busca": "Status da Busca",
-                "Estimativa_Impostos_Total": "Imp. Totais (R$)",
-                "Nota_feita": "Nota feita", # Mapeamento para Nota_feita
-            }
-            
-            df_display_search_results = df_found_processes[[col for col in display_cols_search_results if col in df_found_processes.columns]].rename(columns=display_col_names_map)
-
-            st.dataframe(
-                df_display_search_results,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Processo": st.column_config.TextColumn("Processo", width="medium"),
-                    "Status Geral": st.column_config.TextColumn("Status Geral", width="small"),
-                    "Observação": st.column_config.TextColumn("Observação", width="medium"),
-                    "Previsão na Pichau": st.column_config.TextColumn("Previsão na Pichau", width="small"),
-                    "Data do Embarque": st.column_config.TextColumn("Data do Embarque", width="small"),
-                    "ETA no Recinto": st.column_config.TextColumn("ETA no Recinto", width="small"),
-                    "Data de Registro": st.column_config.TextColumn("Data de Registro", width="small"),
-                    "ID do DB": st.column_config.TextColumn("ID do DB", width="small"),
-                    "Status da Busca": st.column_config.TextColumn("Status da Busca", width="small"),
-                    "Imp. Totais (R$)": st.column_config.TextColumn("Imp. Totais (R$)", width="small"),
-                    "Nota feita": st.column_config.TextColumn("Nota feita", width="small"), # Configuração da coluna Nota feita
-                }
+            # Processa membros do grupo com lazy loading
+            member_payment_rows = _prepare_payment_table_data_cached(
+                group_data.get('members_data', []),
+                st.session_state.get('last_db_update', datetime.min),
+                max_rows=st.session_state.table_rows_loaded
             )
+            # Indenta os processos membros
+            for row in member_payment_rows:
+                row["Processo"] = f"  - {row['Processo']}"
+            table_data.extend(member_payment_rows)
+    
+    # Exibe a tabela com os dados preparados
+    if table_data:
+        df_display = pd.DataFrame(table_data, columns=table_columns)
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        
+        # Mostra botão "Carregar Mais" se houver mais dados
+        if (st.session_state.table_rows_loaded < st.session_state.total_rows_available and 
+            st.session_state.show_load_more_table_button):
             
-            processes_to_edit_ids = [p['ID'] for p in st.session_state.mass_edit_found_processes if p['ID'] != 'Não encontrado']
-            
-            if not processes_to_edit_ids:
-                st.warning("Nenhum processo válido encontrado para edição. Por favor, corrija os nomes e tente novamente.")
-                st.session_state.mass_edit_can_proceed = False
-            else:
-                st.session_state.mass_edit_can_proceed = True
-                st.markdown("---")
-                st.markdown("#### 2. Selecionar Novos Valores")
+            col_center = st.columns([1, 2, 1])[1]
+            with col_center:
+                if st.button(f"📋 Carregar mais {TABLE_ROWS_INCREMENT} linhas " +
+                            f"({st.session_state.table_rows_loaded}/{st.session_state.total_rows_available})", 
+                            key=f"load_more_table_{status}"):
+                    _load_more_table_rows()
+                    # st.rerun() # Streamlit fará o rerun automaticamente
+        
+        # Mostra estatísticas de carregamento
+        if st.session_state.table_rows_loaded < st.session_state.total_rows_available:
+            st.info(f"📊 Exibindo {st.session_state.table_rows_loaded} de {st.session_state.total_rows_available} processos. " + 
+                    f"Use o botão 'Carregar Mais' para ver mais {TABLE_ROWS_INCREMENT} linhas.")
+    else:
+        st.info(f"Nenhum processo encontrado para o status {status}")
 
-                new_status_geral = st.selectbox(
-                    "Novo Status Geral:",
-                    options=[""] + db_manager.STATUS_OPTIONS,
-                    key="mass_edit_new_status_value"
-                )
-                if new_status_geral == "":
-                    new_status_geral = None
 
-                if 'mass_edit_observacao_touched' not in st.session_state:
-                    st.session_state.mass_edit_observacao_touched = False
-
-                new_observacao_input = st.text_area(
-                    "Nova Observação:",
-                    value="",
-                    key="mass_edit_new_observacao_value"
-                )
-
-                if new_observacao_input != "":
-                    st.session_state.mass_edit_observacao_touched = True
-                elif st.session_state.mass_edit_observacao_touched and new_observacao_input == "":
-                    pass
-                else:
-                    st.session_state.mass_edit_observacao_touched = False
-
-                new_previsao_pichau_date = st.date_input(
-                    "Nova Previsão na Pichau:",
-                    value=None,
-                    key="mass_edit_new_previsao_pichau_value",
-                    format="DD/MM/YYYY"
-                )
-                new_previsao_pichau = new_previsao_pichau_date.strftime("%Y-%m-%d") if new_previsao_pichau_date else None
-
-                new_data_embarque_date = st.date_input(
-                    "Nova Data do Embarque:",
-                    value=None,
-                    key="mass_edit_new_data_embarque_value",
-                    format="DD/MM/YYYY"
-                )
-                new_data_embarque = new_data_embarque_date.strftime("%Y-%m-%d") if new_data_embarque_date else None
-
-                new_eta_recinto_date = st.date_input(
-                    "Nova ETA no Recinto:",
-                    value=None,
-                    key="mass_edit_new_eta_recinto_value",
-                    format="DD/MM/YYYY"
-                )
-                new_eta_recinto = new_eta_recinto_date.strftime("%Y-%m-%d") if new_eta_recinto_date else None
-
-                new_data_registro_date = st.date_input(
-                    "Nova Data de Registro:",
-                    value=None,
-                    key="mass_edit_new_data_registro_value",
-                    format="DD/MM/YYYY"
-                )
-                new_data_registro = new_data_registro_date.strftime("%Y-%m-%d") if new_data_registro_date else None
-
-                new_nota_feita = st.selectbox( # Novo campo para edição em massa
-                    "Nova Nota feita?:",
-                    options=["", "Não", "Sim"],
-                    key="mass_edit_new_nota_feita_value"
-                )
-                if new_nota_feita == "":
-                    new_nota_feita = None
-
-                col_save, col_cancel = st.columns(2)
-
-                with col_save:
-                    if st.form_submit_button("Aplicar Alterações", disabled=not st.session_state.mass_edit_can_proceed):
-                        if not processes_to_edit_ids:
-                            st.warning("Nenhum processo válido selecionado para edição.")
-                        else:
-                            user_info = st.session_state.get('user_info', {'username': 'Desconhecido'})
-                            username = user_info.get('username')
-
-                            successful_updates_count = 0
-                            for p_id in processes_to_edit_ids:
-                                original_process_data_row = db_manager.obter_processo_por_id(p_id)
-                                if original_process_data_row:
-                                    original_process_data = dict(original_process_data_row)
-                                    
-                                    changes_to_apply = {}
-
-                                    if new_status_geral is not None:
-                                        changes_to_apply["Status_Geral"] = new_status_geral
-                                    
-                                    if st.session_state.mass_edit_observacao_touched:
-                                        changes_to_apply["Observacao"] = new_observacao_input if new_observacao_input != "" else None
-                                    
-                                    if new_previsao_pichau is not None:
-                                        changes_to_apply["Previsao_Pichau"] = new_previsao_pichau
-                                    if new_data_embarque is not None:
-                                        changes_to_apply["Data_Embarque"] = new_data_embarque
-                                    if new_eta_recinto is not None:
-                                        changes_to_apply["ETA_Recinto"] = new_eta_recinto
-                                    if new_data_registro is not None:
-                                        changes_to_apply["Data_Registro"] = new_data_registro
-                                    if new_nota_feita is not None: # Aplicar mudança para Nota_feita
-                                        changes_to_apply["Nota_feita"] = new_nota_feita
-
-                                    if not changes_to_apply:
-                                        st.info(f"Nenhuma alteração detectada para o processo {original_process_data.get('Processo_Novo', 'N/A')} (ID: {p_id}).")
-                                        continue
-
-                                    db_col_names_full = db_manager.obter_nomes_colunas_db()
-                                    data_tuple_for_db = []
-                                    for col_name in db_col_names_full:
-                                        if col_name == 'id':
-                                            continue
-                                        if col_name in changes_to_apply:
-                                            data_tuple_for_db.append(changes_to_apply[col_name])
-                                        else:
-                                            data_tuple_for_db.append(original_process_data.get(col_name))
-
-                                    if db_manager.atualizar_processo(p_id, tuple(data_tuple_for_db)):
-                                        successful_updates_count += 1
-                                        for field_name, new_val in changes_to_apply.items():
-                                            db_manager.inserir_historico_processo(p_id, field_name, original_process_data.get(field_name), new_val, username)
-                                    else:
-                                        st.error(f"Falha ao atualizar processo ID {p_id}.")
-                                else:
-                                    st.error(f"Processo ID {p_id} não encontrado para atualização.")
-
-                            if successful_updates_count > 0:
-                                st.success(f"{successful_updates_count} processos atualizados com sucesso!")
-                                st.session_state.show_mass_edit_popup = False
-                                st.session_state.mass_edit_process_names_input = ""
-                                st.session_state.mass_edit_found_processes = []
-                                st.session_state.mass_edit_observacao_touched = False
-                                _load_processes()
-                                st.rerun()
-                            else:
-                                st.warning("Nenhum processo foi atualizado ou nenhuma alteração foi detectada para aplicar.")
-
-                with col_cancel:
-                    if st.form_submit_button("Cancelar"):
-                        st.session_state.show_mass_edit_popup = False
-                        st.session_state.mass_edit_process_names_input = ""
-                        st.session_state.mass_edit_found_processes = []
-                        st.session_state.mass_edit_observacao_touched = False
-                        st.rerun()
-        else:
-            col_empty, col_cancel_only = st.columns([0.7, 0.3])
-            with col_cancel_only:
-                if st.form_submit_button("Fechar"):
-                    st.session_state.show_mass_edit_popup = False
-                    st.session_state.mass_edit_process_names_input = ""
-                    st.session_state.mass_edit_found_processes = []
-                    st.session_state.mass_edit_observacao_touched = False
-                    st.rerun()
-
+def _clear_payment_cache():
+    """Limpa o cache de dados de pagamento quando necessário."""
+    # Limpa cache de sessão
+    keys_to_remove = [key for key in st.session_state.keys() if key.startswith('payment_data_')]
+    for key in keys_to_remove:
+        del st.session_state[key]
+    
+    # Limpa cache do Streamlit
+    _get_payment_data_for_process.clear()
+    _prepare_payment_table_data_cached.clear()
 
 def show_page():
-    """Função principal para exibir a página de Follow-up de Importação."""
+    """Função principal para rotear entre as páginas do Follow-up e Formulário de Processo."""
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "Follow-up Importação"
+
+    # A callback de reload agora chama a função que gerencia o cache dos filtros
+    st.session_state.form_reload_processes_callback = _call_apply_filters_and_update_session_state
+    
+    if st.session_state.current_page == "Formulário Processo":
+        process_form_page.show_process_form_page(
+            process_identifier=st.session_state.get('form_process_identifier'),
+            reload_processes_callback=st.session_state.form_reload_processes_callback,
+            is_cloning=st.session_state.get('form_is_cloning', False)
+        )
+    elif st.session_state.current_page == "Consulta de Processo":
+        process_query_page.show_process_query_page(
+            process_identifier=st.session_state.get('query_process_identifier'),
+            return_callback=lambda: setattr(st.session_state, 'current_page', "Follow-up Importação")
+        )
+    elif st.session_state.current_page == "Vincular Consolidado":
+        from app_logic.vincular_consolidado_page import show_vincular_consolidado_page
+        show_vincular_consolidado_page(process_id=st.session_state.get('process_id_to_vincular'))
+    else: # Default para "Follow-up Importação"
+        _display_followup_list_page()
+
+
+def _display_followup_list_page():
+    """
+    Função principal para exibir a página da lista de Follow-up de Importação.
+    
+    ATUALIZAÇÃO: Sistema otimizado com virtualização/lazy loading de cards.
+    - Carrega TODOS os processos na primeira chamada para garantir ordem correta
+    - Implementa carregamento progressivo dos cards (renderiza apenas os visíveis)
+    - Remove sistema de paginação para melhor UX
+    """
     background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
     set_background_image(background_image_path)
 
     st.subheader("Follow-up Importação")
 
-    # Inicialização dos estados de sessão, garantindo que existem
-    if 'followup_processes_data' not in st.session_state:
-        st.session_state.followup_processes_data = []
-    if 'followup_selected_process_id' not in st.session_state:
-        st.session_state.followup_selected_process_id = None
-    if 'followup_status_filter' not in st.session_state:
-        st.session_state.followup_status_filter = 'Todos'
-    if 'followup_search_terms' not in st.session_state:
-        st.session_state.followup_search_terms = {}
-    if 'followup_all_status_options' not in st.session_state:
-        st.session_state.followup_all_status_options = db_manager.STATUS_OPTIONS + ["Todos", "Arquivados"]
-    # Removido show_followup_edit_popup e followup_editing_process_id daqui, pois serão gerenciados pela navegação de página
-    if 'show_filter_search_popup' not in st.session_state:
-        st.session_state.show_filter_search_popup = False
-    if 'gsheets_url_id' not in st.session_state:
-        st.session_state.gsheets_url_id = ""
-    if 'gsheets_worksheet_name' not in st.session_state:
-        st.session_state.gsheets_worksheet_name = "Sheet1"
-    if 'show_delete_confirm_popup' not in st.session_state:
-        st.session_state.show_delete_confirm_popup = False
-    if 'delete_process_id_to_confirm' not in st.session_state:
-        st.session_state.delete_process_id_to_confirm = None
-    if 'delete_process_name_to_confirm' not in st.session_state:
-        st.session_state.delete_process_name_to_confirm = None
-    if 'show_import_popup' not in st.session_state:
-        st.session_state.show_import_popup = False
-    if 'followup_expand_all_expanders' not in st.session_state:
-        st.session_state.followup_expand_all_expanders = False
-    if 'show_mass_edit_popup' not in st.session_state:
-        st.session_state.show_mass_edit_popup = False
-    if 'mass_edit_process_names_input' not in st.session_state:
-        st.session_state.mass_edit_process_names_input = ""
-    if 'mass_edit_found_processes' not in st.session_state:
-        st.session_state.mass_edit_found_processes = []
-    if 'mass_edit_can_proceed' not in st.session_state:
-        st.session_state.mass_edit_can_proceed = False
+    # Inicialização dos estados da sessão (state management)
+    st.session_state.setdefault('followup_processes_data_non_consolidated', [])
+    st.session_state.setdefault('consolidated_groups_data', [])
+    st.session_state.setdefault('selected_process_data', None)
+    st.session_state.setdefault('followup_search_terms', {})
+    st.session_state.setdefault('followup_all_status_options', [])
+    st.session_state.setdefault('followup_raw_status_options_for_multiselect', [])
+    st.session_state.setdefault('followup_selected_statuses', ['Todos'])
+    st.session_state.setdefault('followup_main_process_search_term', '')
+    st.session_state.setdefault('followup_popup_search_terms', {})
+    st.session_state.setdefault('show_filter_search_popup', False)
+    st.session_state.setdefault('show_delete_confirm_popup', False)
+    st.session_state.setdefault('delete_process_id_to_confirm', None)
+    st.session_state.setdefault('delete_process_name_to_confirm', None)
+    st.session_state.setdefault('form_is_cloning', False)
+    st.session_state.setdefault('show_change_status_popup', False) 
+    st.session_state.setdefault('process_id_to_change_status', None)
+    st.session_state.setdefault('process_name_to_change_status', None)
+    st.session_state.setdefault('show_edit_checklist_popup', False)
+    st.session_state.setdefault('checklist_process_id_to_edit', None)
+    st.session_state.setdefault('checklist_process_name_to_edit', None)
+    st.session_state.setdefault('view_mode', 'cards')
+    st.session_state.setdefault('all_processes_raw_data_cache', []) # Dados brutos do DB, acumulados via paginação
+    st.session_state.setdefault('consolidated_groups_data_raw_cache', []) # Grupos consolidados brutos do DB
+    st.session_state.setdefault('last_db_update', datetime.now()) # NOVO: Timestamp da última atualização do DB
+    st.session_state.setdefault('sorted_all_expander_keys', []) # Cache para a estrutura final dos expanders
+    st.session_state.setdefault('show_payment_view', False) # NOVO: Estado para alternar a visualização de pagamentos
+    
+    # --- Configuração do Sistema de Virtualização ---
+    # Controla quantos cards são renderizados por vez para melhorar performance
+    st.session_state.setdefault('cards_per_chunk', INITIAL_CARDS_PER_CHUNK)  # Número otimizado: 15 cards por vez (vs 20 original)
+    # Inicializa loaded_cards_per_status para todos os status presentes, se ainda não inicializado corretamente
+    if not st.session_state.get('loaded_cards_per_status') or set(st.session_state.get('loaded_cards_per_status', {}).keys()) != set([item['status'] for item in st.session_state.get('sorted_all_expander_keys', [])]):
+        st.session_state.loaded_cards_per_status = {item['status']: INITIAL_CARDS_PER_CHUNK for item in st.session_state.get('sorted_all_expander_keys', [])}
+        st.session_state.show_load_more_buttons = {item['status']: True for item in st.session_state.get('sorted_all_expander_keys', [])}
+    # --- Configuração do Sistema de Lazy Loading para Tabelas ---
+    st.session_state.setdefault('table_rows_loaded', TABLE_ROWS_INCREMENT)
+    st.session_state.setdefault('total_rows_available', 0)
+    st.session_state.setdefault('show_load_more_table_button', True)
 
-    # Exibe pop-ups que não são de edição de processo
+    # --- Etapa 1: Carregamento Inicial de Dados (ocorre apenas quando necessário) ---
+    # Sempre carrega TODOS os processos para garantir ordem correta e melhor UX
+    if not st.session_state.all_processes_raw_data_cache or st.session_state.get('_invalidate_filter_cache', False):
+        _fetch_initial_processes()
+        st.session_state._invalidate_filter_cache = False # Reseta a flag após a busca inicial
+
+    # --- Etapa 2: Aplicação de Filtros e Preparação da UI (sempre que um rerun ocorre) ---
+    # Estes passos aplicam os filtros aos dados JÁ CARREGADOS no cache e preparam os expanders.
+    _call_apply_filters_and_update_session_state() 
+
+    # Exibe popups de ações (eles sobrepõem o conteúdo principal se estiverem ativos)
     _display_filter_search_popup()
-    _display_import_popup()
     _display_delete_confirm_popup()
-    _display_mass_edit_popup()
+    _display_change_status_popup() 
+    _display_edit_checklist_popup() 
 
-    # Se qualquer popup (exceto o de edição de processo, que agora é uma página) estiver visível,
-    # não renderiza o restante da página principal para evitar sobreposição.
+    # Se qualquer popup estiver visível, o restante da UI principal não é renderizado
     if st.session_state.get('show_filter_search_popup', False) or \
-       st.session_state.get('show_import_popup', False) or \
        st.session_state.get('show_delete_confirm_popup', False) or \
-       st.session_state.get('show_mass_edit_popup', False):
-        return # Impede a renderização da página principal enquanto um popup estiver ativo
-
-    _load_processes() 
+       st.session_state.get('show_change_status_popup', False) or \
+       st.session_state.get('show_edit_checklist_popup', False): 
+        return
 
     st.markdown("---")
     
-    col1_add, col1_filter, col1_mass_edit = st.columns([0.032, 0.03, 0.15]) 
-    with col1_add:
-        if st.button("Adicionar Novo Processo", key="add_new_process_button"):
-            _open_edit_process_popup(None) # Chamará a nova página de formulário
-    with col1_filter:
-        if st.button("Filtros e Pesquisa", key="open_filter_search_popup_button"):
-            _open_filter_search_popup()
-    with col1_mass_edit:
-        if st.button("Editar Múltiplos Processos", key="mass_edit_processes_button"):
-            _open_mass_edit_popup()
+    # --- Controles de Filtro e Visualização da UI Principal ---
+    col_main_filters_1, col_main_filters_2, col_view_toggle = st.columns([0.45, 0.45, 0.1])
+    with col_main_filters_1:
+        all_status_options_formatted = st.session_state.get('followup_all_status_options', ["Todos"])
+        current_selected_statuses_raw = st.session_state.get('followup_selected_statuses', ['Todos'])
 
-    col2_search_select, col2_clear_search = st.columns([0.5, 0.2]) 
-    with col2_search_select:
-        process_name_to_id_map = {p['Processo_Novo']: p['id'] for p in st.session_state.followup_processes_data if p.get('Processo_Novo')}
-        sorted_process_names = [""] + sorted(process_name_to_id_map.keys())
-
-        current_search_term_for_selectbox = st.session_state.get('followup_search_terms', {}).get('Processo_Novo', '') or ""
-        try:
-            default_selectbox_index = sorted_process_names.index(current_search_term_for_selectbox)
-        except ValueError:
-            default_selectbox_index = 0
-
-        edited_process_name_selected = st.selectbox(
-            "Pesquisar e Abrir para Editar:", 
-            options=sorted_process_names,
-            index=default_selectbox_index,
-            key="followup_edit_process_name_search_input",
-            label_visibility="visible"
-        )
-        
-        if edited_process_name_selected != current_search_term_for_selectbox:
-            st.session_state.followup_search_terms['Processo_Novo'] = edited_process_name_selected
-            st.rerun()
-
-        if edited_process_name_selected:
-            selected_process_identifier = process_name_to_id_map.get(edited_process_name_selected)
-            if selected_process_identifier:
-                if st.button(f"Abrir Edição de '{edited_process_name_selected}'", key=f"edit_process_from_search_button_outside_form"):
-                    _open_edit_process_popup(selected_process_identifier) # Chamará a nova página de formulário
+        default_multiselect_value = []
+        for raw_s in current_selected_statuses_raw:
+            if raw_s == 'Todos':
+                if 'Todos' in all_status_options_formatted:
+                    default_multiselect_value.append("Todos")
             else:
-                pass 
+                found_formatted_opt = next((opt for opt in all_status_options_formatted if opt.startswith(raw_s + ' (')), None)
+                if found_formatted_opt:
+                    default_multiselect_value.append(found_formatted_opt)
+        
+        st.multiselect(
+            "Filtrar por Status:",
+            options=all_status_options_formatted,
+            default=default_multiselect_value,
+            key="main_followup_status_multiselect",
+            on_change=_on_status_multiselect_change
+        )
 
-    with col2_clear_search:
-        st.markdown("<div style='height: 28px; visibility: hidden;'>.</div>", unsafe_allow_html=True)
-        if st.button("Limpar Pesquisa", key="clear_process_search_button"):
-            st.session_state.followup_search_terms['Processo_Novo'] = ""
-            st.rerun()
+    with col_main_filters_2:
+        st.text_input(
+            "Pesquisar Processo:", 
+            value=st.session_state.get('followup_main_process_search_term', ''),
+            key="main_followup_search_processo_novo",
+            on_change=_on_process_search_change 
+        )
+    with col_view_toggle:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("🔁", help="Clique para alterar a visualização", key="toggle_view_mode"):
+            _toggle_view_mode()
+            
+    # Popover de "Mais Opções" condicional
+    # Ele será visível apenas se o usuário tiver permissão para a nova tela "Mais Opções (Popover)"
+    user_allowed_screens = st.session_state.get('user_info', {}).get('allowed_screens', [])
+    is_admin = st.session_state.get('user_info', {}).get('is_admin', False)
+
+    if is_admin or "Mais Opções (Popover)" in user_allowed_screens:
+        with st.popover("Mais Opções"):
+            if is_admin or "Formulário Processo" in user_allowed_screens:
+                if st.button("Adicionar Novo Processo +", key="add_new_process_button"):
+                    _open_edit_process_popup(None)
+            
+            # O botão "Mais Filtros" é sempre visível, pois a consulta é básica
+            if st.button("Mais Filtros ⌨", key="open_filter_search_popup_button"):
+                _open_filter_search_popup()
+            
+            # NOVO BOTÃO: Alterar Visualização para Pagamentos
+            payment_view_button_label = "Alterar Visualização: Dados Gerais 📊" if st.session_state.get('show_payment_view', False) else "Alterar Visualização: Pagamentos 💵"
+            if st.button(payment_view_button_label, key="toggle_payment_view_button"):
+                # Define uma nova flag no session_state para controlar o modo de visualização de pagamentos
+                st.session_state.show_payment_view = not st.session_state.get('show_payment_view', False)
+                st.rerun()
+
+            # --- Configurações de Performance (visíveis apenas para administradores ou usuários com permissão específica, se desejar) ---
+            if is_admin: # Apenas admins podem ajustar configs de performance
+                st.markdown("**⚙️ Configurações de Performance:**")
+                
+                # Controle para ajustar quantos cards carregar por vez
+                new_cards_per_chunk = st.selectbox(
+                    "Cards por carregamento:",
+                    options=[10, 15, 20, 30, 50, 100],
+                    index=[10, 15, 20, 30, 50, 100].index(st.session_state.get('cards_per_chunk', 20)),
+                    help="Quantidade de cards carregados por vez. Valores menores melhoram a velocidade inicial.",
+                    key="cards_per_chunk_selector"
+                )
+                
+                # Se mudou a configuração, atualiza e reseta o estado de carregamento
+                if new_cards_per_chunk != st.session_state.get('cards_per_chunk', 20):
+                    st.session_state.cards_per_chunk = new_cards_per_chunk
+                    _reset_cards_loading_state()
+                    # Removido st.rerun() - não necessário
+                
+                # Botão para carregar todos os cards de uma vez
+                if st.button("🚀 Carregar Todos os Cards", help="Carrega todos os cards de todos os status de uma vez"):
+                    # Define um número muito alto para todos os status
+                    for status in st.session_state.loaded_cards_per_status.keys():
+                        st.session_state.loaded_cards_per_status[status] = 9999
+                    # Removido st.rerun() - não necessário
+            
+            # Botões de exportação (visíveis apenas para usuários com permissão ou admins)
+            if is_admin or "Exportar Excel" in user_allowed_screens: # Exemplo: uma permissão "Exportar Excel"
+                if st.session_state.followup_processes_data_non_consolidated:
+                    df_to_export_non_consolidated = pd.DataFrame(st.session_state.followup_processes_data_non_consolidated)
+                    excel_data_non_consolidated = _export_processes_to_excel(df_to_export_non_consolidated)
+                    st.download_button(
+                        label="Exportar Excel (Não Consolidados) 📊",
+                        data=excel_data_non_consolidated,
+                        file_name="processos_importacao_nao_consolidados.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="export_excel_button_non_consolidado"
+                    )
+                
+                all_consolidated_members_for_export = []
+                for group in st.session_state.consolidated_groups_data:
+                    all_consolidated_members_for_export.extend(group['members_data'])
+                if all_consolidated_members_for_export:
+                    df_to_export_consolidated = pd.DataFrame(all_consolidated_members_for_export)
+                    excel_data_consolidated = _export_processes_to_excel(df_to_export_consolidated)
+                    st.download_button(
+                        label="Exportar Excel (Consolidados) 📊",
+                        data=excel_data_consolidated,
+                        file_name="processos_importacao_consolidados.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="export_excel_button_consolidado"
+                    )
 
     st.markdown("---")
     st.markdown("#### Processos de Importação")
-    
-    col3_expand, col3_collapse = st.columns([0.07, 0.5])
-    with col3_expand:
-        if st.button("Expandir Todos", key="expand_all_button"):
-            _expand_all_expanders()
-    
-    with col3_collapse:
-        if st.button("Recolher Todos", key="collapse_all_button"):
-            _collapse_all_expanders()
-    
-    if st.session_state.followup_processes_data:
-        df_all_processes = pd.DataFrame(st.session_state.followup_processes_data)
-        
-        if 'Status_Geral' not in df_all_processes.columns:
-            df_all_processes['Status_Geral'] = 'Sem Status'
-        if 'Modal' not in df_all_processes.columns:
-            df_all_processes['Modal'] = 'Sem Modal'
-        
-        df_all_processes['Status_Geral'] = df_all_processes['Status_Geral'].fillna('Sem Status')
-        df_all_processes['Modal'] = df_all_processes['Modal'].fillna('Sem Modal')
 
-        custom_status_order = [
-            'Encerrado','Chegada Pichau', 'Agendado', 'Liberado', 'Registrado',
-            'Chegada Recinto', 'Embarcado', 'Verificando', 'Pré Embarque', 
-            'Em produção', 'Processo Criado', 
-            'Sem Status', 'Status Desconhecido', 'Arquivados'
-        ]
-
-        for status_val in df_all_processes['Status_Geral'].unique():
-            if status_val not in custom_status_order:
-                custom_status_order.append(status_val)
-
-        df_all_processes['Status_Geral'] = pd.Categorical(
-            df_all_processes['Status_Geral'],
-            categories=custom_status_order,
-            ordered=True
-        )
-
-        df_all_processes = df_all_processes.sort_values(by=['Status_Geral', 'Modal'])
-
-        grouped_by_status = df_all_processes.groupby('Status_Geral', observed=False) 
-
-        display_columns_for_dataframe = [
-            "Processo_Novo",  "Fornecedor", "Tipos_de_item","Observacao", "Data_Embarque", "ETA_Recinto",
-            "Previsao_Pichau", "Documentos_Revisados", "Conhecimento_Embarque",
-            "Descricao_Feita", "Descricao_Enviada","Nota_feita", "N_Invoice",
-            "Quantidade", "Valor_USD", "Pago", "N_Ordem_Compra", "Data_Compra",
-            "Estimativa_Frete_USD", "Agente_de_Carga_Novo",
-            "Caminho_da_pasta",
-            "Origem", "Destino", "INCOTERM", "Comprador", "Navio",
-            "Data_Registro",
-            "Estimativa_Impostos_Total", # Mantido, refletindo a soma total
-            "id"
-        ]
-        # Filtrar as colunas para garantir que apenas as existentes no DataFrame sejam exibidas
-        cols_to_display_in_table = [col for col in display_columns_for_dataframe if col in df_all_processes.columns]
-
-        column_config_for_dataframe = {
-            "Processo_Novo": st.column_config.TextColumn("Processo", width="medium"),
-            "Fornecedor": st.column_config.TextColumn("Fornecedor", width="small"),
-            "Tipos_de_item": st.column_config.TextColumn("Tipo Item", width="small"),
-            "Observacao": st.column_config.TextColumn("Observação", width="medium"),
-            "Data_Embarque": st.column_config.TextColumn("Data Emb.", width="small"),
-            "ETA_Recinto": st.column_config.TextColumn("ETA Recinto", width="small"),
-            "Previsao_Pichau": st.column_config.TextColumn("Prev. Pichau", width="small"),
-            "Documentos_Revisados": st.column_config.TextColumn("Docs Rev.", width="small"),
-            "Conhecimento_Embarque": st.column_config.TextColumn("Conh. Emb.", width="small"),
-            "Descricao_Feita": st.column_config.TextColumn("Desc. Feita", width="small"),
-            "Descricao_Enviada": st.column_config.TextColumn("Desc. Envia.", width="small"),            
-            "Nota_feita": st.column_config.TextColumn("Nota feita", width="small"), # Configuração da coluna Nota feita
-            "N_Invoice": st.column_config.TextColumn("Nº Invoice", width="small"),
-            "Quantidade": st.column_config.TextColumn("Qtd", width="small"), 
-            "Valor_USD": st.column_config.TextColumn("Valor (US$)", width="small"),
-            "Pago": st.column_config.TextColumn("Pago?", width="small"), 
-            "N_Ordem_Compra": st.column_config.TextColumn("Nº OC", width="small"),
-            "Data_Compra": st.column_config.TextColumn("Data Compra", width="small"),
-            "Estimativa_Frete_USD": st.column_config.TextColumn("Est. Frete (US$)", width="medium"),
-            "Agente_de_Carga_Novo": st.column_config.TextColumn("Agente Carga", width="small"),
-            "Caminho_da_pasta": st.column_config.TextColumn("Documentos Anexados", width="medium"),
-            "Origem": st.column_config.TextColumn("Origem", width="small"),
-            "Destino": st.column_config.TextColumn("Destino", width="small"),
-            "INCOTERM": st.column_config.TextColumn("INCOTERM", width="small"),
-            "Comprador": st.column_config.TextColumn("Comprador", width="small"),
-            "Navio": st.column_config.TextColumn("Navio", width="small"),
-            "Data_Registro": st.column_config.TextColumn("Data Registro", width="small"),
-            "Estimativa_Impostos_Total": st.column_config.TextColumn("Imp. Totais (R$)", width="medium"), # Configuração para o campo total
-            "Status_Geral": st.column_config.Column(disabled=True, width="small"), 
-            "Modal": st.column_config.Column(disabled=True, width="small"), 
-            "Status_Arquivado": st.column_config.Column(disabled=True, width="small"), 
-            "id": st.column_config.NumberColumn("ID", width="small", help="ID Único do Processo")
+    # Estilos CSS para os cards e botões com otimizações de performance avançadas.
+    st.markdown("""
+        <style>
+        /* CSS OTIMIZADO PARA PERFORMANCE - Baseado em OTIMIZACOES_PERFORMANCE.md */
+        .process-card-container {
+            background-color: #333;
+            border-radius: 10px;
+            padding: 0;
+            margin-bottom: 10px;
+            box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.3);
+            border: 1px solid #444;
+            /* OTIMIZAÇÕES DE GPU E PERFORMANCE */
+            contain: layout style paint;      /* Isolamento de layout para melhor performance */
+            will-change: transform;           /* Otimização de compositing */
+            transform: translateZ(0);         /* Força layer de GPU */
+            backface-visibility: hidden;      /* Evita renderização traseira */
+            transition: transform 0.2s ease;  /* Transições GPU-aceleradas */
         }
-
-
-        status_color_hex = {
-            'Encerrado': '#404040',
-            'Chegada Pichau': "#7F81D3",
-            'Agendado': "#534E6B",
-            'Liberado': '#A0A0A0',
-            'Registrado': '#C0C0C0',
-            'Chegada Recinto': '#008000',
-            'Embarcado': '#6A0DAD',
-            'Pré Embarque': '#FFFFE0',
-            'Verificando': '#F08080',
-            'Em produção': '#FFB6C1',
-            'Processo Criado': '#FFFFFF',            
-            'Arquivados': '#C0C0C0',
-            'Sem Status': '#909090',
-            'Status Desconhecido': '#B0B0B0',
+        .process-card-container:hover {
+            transform: translateY(-5px) translateZ(0);  /* Mantém a GPU layer */
+            box-shadow: 3px 3px 12px rgba(0, 0, 0, 0.5);
         }
+        .process-card-container-inner { 
+            padding: 5px; 
+            margin-bottom: 2px;
+            contain: layout;  /* Isolamento adicional para cards internos */
+        } 
+        .process-card-row { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 10px; 
+        }
+        .process-card-col { 
+            flex: 1; 
+            padding: 0 5px; 
+            color: #E0E0E0; 
+        }
+        .process-card-col strong { 
+            color: #F8F8F8; 
+        }
+        .process-card-status-text { 
+            font-weight: bold; 
+            padding: 2px 8px; 
+            border-radius: 5px; 
+            display: inline-block; 
+        }
+        .process-card-doc-status { 
+            font-size: 1.1em; 
+        }
+        
+        /* Estilos para os botões "Carregar Mais" com animações GPU-aceleradas */
+        .load-more-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            text-align: center;
+            width: 100%;
+            /* OTIMIZAÇÕES DE PERFORMANCE */
+            will-change: transform, box-shadow;
+            transform: translateZ(0);
+            transition: all 0.3s ease;
+        }
+        .load-more-button:hover {
+            transform: translateY(-2px) translateZ(0);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+        }
+        .load-more-button:active {
+            transform: translateY(0px) translateZ(0);
+        }
+        
+        /* Indicador de loading otimizado */
+        .loading-indicator {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            will-change: transform;  /* Otimização para animação */
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Otimizações para botões do popover */
+        div[data-testid^="stVerticalBlock"] > div > div > div > div > .stButton > button {
+            font-size: 1.5em; 
+            padding: 0.2em 0.5em; 
+            border-radius: 50%; 
+            width: 40px; 
+            height: 40px;
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            background-color: #555;
+            border: 1px solid #777; 
+            color: #F8F8F8;
+            /* OTIMIZAÇÕES DE PERFORMANCE */
+            will-change: transform, background-color;
+            transform: translateZ(0);
+            transition: all 0.2s ease;
+        }
+        div[data-testid^="stVerticalBlock"] > div > div > div > div > .stButton > button:hover {
+            background-color: #777; 
+            transform: scale(1.1) translateZ(0);
+        }
+        
+        /* Evita layout shifts nos cards */
+        .stExpander {
+            contain: layout;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
-        for status in custom_status_order:
-            status_group_df = df_all_processes[df_all_processes['Status_Geral'] == status]
-            
-            if status_group_df.empty:
-                continue
+    # Renderização dos expanders com virtualização de cards
+    if not st.session_state.sorted_all_expander_keys:
+        st.info("Nenhum processo encontrado com os filtros aplicados.")
+        return
 
-            bg_color = status_color_hex.get(status, '#333333')
-            text_color = '#FFFFFF' if bg_color in ['#404040', '#6A0DAD', '#606060', '#333333'] else '#000000'
+    # --- Renderização dos expanders com sistema de lazy loading ---
+    for item in st.session_state.sorted_all_expander_keys:
+        status = item['status']
+        processes_and_groups_in_status = item['processes_and_groups']
 
-            st.markdown(f"<h4 style='background-color:{bg_color}; color:{text_color}; padding: 10px 10px 10px 25px; border-radius: 15px; margin-bottom: 15px;'>Status: {status} - {len(status_group_df)} processo(s)</h4>", unsafe_allow_html=True)
+        if not processes_and_groups_in_status:
+            continue
 
-            with st.expander(f"Detalhes do Status {status}", expanded=st.session_state.followup_expand_all_expanders): 
-                grouped_by_modal = status_group_df.groupby('Modal')
+        status_display_name = "Arquivados" if status == 'Arquivados' else status
 
-                for modal, modal_group_df in grouped_by_modal:
-                    st.markdown(f"<p style='color: #FFFFFF;'><b>Modal:</b> {modal} ({len(modal_group_df)} processos)</p>", unsafe_allow_html=True)
-                    
-                    df_modal_display = modal_group_df.copy()
-                    
-                    for col_name in ["Data_Compra", "Data_Embarque", "Previsao_Pichau", "ETA_Recinto", "Data_Registro"]:
-                        if col_name in df_modal_display.columns:
-                            df_modal_display[col_name] = df_modal_display[col_name].apply(_format_date_display)
-                    for col_name in ["Valor_USD", "Estimativa_Frete_USD"]:
-                        if col_name in df_modal_display.columns:
-                            df_modal_display[col_name] = df_modal_display[col_name].apply(_format_usd_display)
-                    if "Estimativa_Impostos_Total" in df_modal_display.columns: # Formatar o novo campo
-                        df_modal_display["Estimativa_Impostos_Total"] = df_modal_display["Estimativa_Impostos_Total"].apply(_format_currency_display)
-                    if "Quantidade" in df_modal_display.columns:
-                        df_modal_display["Quantidade"] = df_modal_display["Quantidade"].apply(_format_int_display)
-                    for col_name in ["Documentos_Revisados", "Conhecimento_Embarque", "Descricao_Feita", "Descricao_Enviada", "Pago", "Nota_feita", "Conferido"]: # Adicionada Nota_feita e Conferido
-                        if col_name in df_modal_display.columns:
-                            df_modal_display[col_name] = df_modal_display[col_name].apply(lambda x: "✅ Sim" if str(x).lower() == "sim" else ("⚠️ Não" if str(x).lower() == "não" else ""))
-                    
-                    # Coluna DI_ID_Vinculada removida da exibição
-                    # if 'DI_ID_Vinculada' in df_modal_display.columns:
-                    #     df_modal_display['DI_ID_Vinculada'] = df_modal_display['DI_ID_Vinculada'].apply(lambda di_id: _get_di_number_from_id(di_id) if di_id is not None else "N/A")
+        with st.expander(f"**{status_display_name} ({len(processes_and_groups_in_status)})**", expanded=True):
+            sorted_items_in_status = processes_and_groups_in_status
 
-                    selected_rows_data = st.dataframe(
-                        df_modal_display[cols_to_display_in_table],
-                        key=f"dataframe_group_{status}_{modal}",
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config=column_config_for_dataframe, 
-                        selection_mode='single-row', 
-                        on_select='rerun', 
-                    )
+            if st.session_state.view_mode == 'cards':
+                cards_loaded_for_status = st.session_state.loaded_cards_per_status.get(status, INITIAL_CARDS_PER_CHUNK)
+                total_cards_in_status = len(sorted_items_in_status)
+                cards_to_show = sorted_items_in_status[:cards_loaded_for_status]
 
-                    if selected_rows_data and \
-                       selected_rows_data.get('selection') and \
-                       selected_rows_data['selection'].get('rows') and \
-                       len(selected_rows_data['selection']['rows']) > 0:
-                        
-                        selected_index_in_df_modal = selected_rows_data['selection']['rows'][0]
-                        
-                        selected_process_name_from_display = df_modal_display.iloc[selected_index_in_df_modal]['Processo_Novo']
+                # --- Busca batch de pagamentos para os cards deste status ---
+                referencias = [proc.get('Processo_Novo', 'N/A') for proc in cards_to_show if not proc.get('_is_consolidated_group')]
+                di_dict = db_utils.get_declaracoes_by_referencias(referencias) if referencias else {}
+                frete_int_dict = db_utils.get_fretes_internacionais_by_referencias(referencias) if referencias else {}
 
-                        selected_original_process = next((p for p in st.session_state.followup_processes_data if p.get('Processo_Novo') == selected_process_name_from_display), None)
-
-                        if selected_original_process:
-                            selected_process_id = selected_original_process.get('id')
-                            selected_process_name = selected_original_process.get('Processo_Novo')
-                            
-                            if selected_process_id is not None and selected_process_name is not None:
-                                col_edit_btn, col_delete_btn = st.columns(2)
-                                with col_edit_btn:
-                                    if st.button(f"Editar Processo Selecionado: {selected_process_name}", key=f"edit_selected_btn_{selected_process_id}"):
-                                        _open_edit_process_popup(selected_process_id)
-                                with col_delete_btn:
-                                    if st.button(f"Excluir Processo Selecionado: {selected_process_name}", key=f"delete_selected_btn_{selected_process_id}"):
-                                        st.session_state.show_delete_confirm_popup = True
-                                        st.session_state.delete_process_id_to_confirm = selected_process_id
-                                        st.session_state.delete_process_name_to_confirm = selected_process_name
-                                        st.rerun()
-                            else:
-                                st.error(f"Erro: ID ou Nome do processo '{selected_process_name_from_display}' não encontrado nos dados originais para edição/exclusão.")
+                for item in cards_to_show:
+                    if item.get('_is_consolidated_group'):
+                        group_data = item['group_data']
+                        unique_group_id = f"consolidated_group_card_{group_data.get('principal_id', uuid.uuid4())}"
+                        _render_consolidated_group_card(group_data, unique_group_id)
+                    else:
+                        row_dict = item
+                        unique_id_for_key = f"non_consolidated_card_{row_dict.get('id', uuid.uuid4())}"
+                        if st.session_state.get('show_payment_view', False):
+                            process_novo = row_dict.get('Processo_Novo', 'N/A')
+                            di_data = di_dict.get(process_novo)
+                            frete_internacional_data = frete_int_dict.get(process_novo)
+                            _render_payment_card(row_dict, unique_id_for_key, di_data=di_data, frete_internacional_data=frete_internacional_data)
                         else:
-                            st.error(f"Erro: Processo '{selected_process_name_from_display}' não encontrado nos dados originais para edição/exclusão.")
+                            _render_process_card(row_dict, unique_id_for_key)
+                    st.markdown("---") # Separador entre cards
+
+                if cards_loaded_for_status < total_cards_in_status:
+                    remaining_cards = total_cards_in_status - cards_loaded_for_status
+                    cards_to_load_next = min(st.session_state.cards_per_chunk, remaining_cards)
+                    col_center_button = st.columns([1, 2, 1])[1]
+                    with col_center_button:
+                        if st.button(
+                            f"📋 Carregar mais {cards_to_load_next} processos ({remaining_cards} restantes)",
+                            key=f"load_more_cards_{status}",
+                            use_container_width=True
+                        ):
+                            _load_more_cards_for_status(status)
+
+                if total_cards_in_status > 0:
+                    st.caption(f"Exibindo {len(cards_to_show)} de {total_cards_in_status} processos")
+
+            else: # Modo de visualização em tabela
+                # A lógica para a tabela foi movida para uma função separada para melhor organização
+                # e para garantir que a `table_data` seja preenchida corretamente antes de ser exibida.
+                # A `table_data` não será mais preenchida no loop principal, mas sim dentro da função
+                # `_render_table_view`.
+                _render_table_view(sorted_items_in_status, status)
+
+
+    # --- Botão flutuante de voltar ao topo (visual clássico, canto inferior direito) + função global para simulação ---
+    st.markdown("""
+        <style>
+        .float-voltar-topo-btn {
+            position: fixed;
+            bottom: 32px;
+            right: 32px;
+            z-index: 9999;
+            background: #0787FF;
+            color: #fff;
+            border: none;
+            border-radius: 50%;
+            width: 56px;
+            height: 56px;
+            box-shadow: 0 4px 16px rgba(7,135,255,0.25), 0 1.5px 4px rgba(0,0,0,0.10);
+            font-size: 2em;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s, box-shadow 0.2s, transform 0.2s;
+            outline: none;
+            opacity: 0.92;
+        }
+        .float-voltar-topo-btn:hover {
+            background: #005fa3;
+            color: #fff;
+            box-shadow: 0 6px 24px rgba(7,135,255,0.35), 0 2px 8px rgba(0,0,0,0.15);
+            transform: translateY(-2px) scale(1.08);
+            opacity: 1.0;
+        }
+        </style>
+        <button id="float-voltar-topo-btn" class="float-voltar-topo-btn" title="Voltar ao topo">⬆️</button>
+        <script>
+        // Função para encontrar o elemento rolável principal do Streamlit
+        function findScrollableContainer() {
+            let element = document.querySelector('.main [data-testid="stVerticalBlock"]');
+            if (element) return element;
+            element = document.querySelector('.stApp');
+            if (element) return element;
+            let bodyChildren = document.body.children;
+            for (let i = 0; i < bodyChildren.length; i++) {
+                let computedStyle = window.getComputedStyle(bodyChildren[i]);
+                if (computedStyle.overflowY === 'auto' || computedStyle.overflowY === 'scroll') {
+                    return bodyChildren[i];
+                }
+            }
+            return window;
+        }
+        function scrollToTopRobust() {
+            try {
+                let scrollableElement = findScrollableContainer();
+                if (scrollableElement) {
+                    if (scrollableElement.scrollTo) {
+                        scrollableElement.scrollTo({top: 0, behavior: 'smooth'});
+                    } else {
+                        window.scrollTo({top: 0, behavior: 'smooth'});
+                    }
+                }
+            } catch(e) {console.error("Erro ao tentar rolar para o topo:", e);}
+        }
+        // Função global para simular clique no botão flutuante
+        window.simulateScrollToTopClick = function() {
+            var btn = document.getElementById('float-voltar-topo-btn');
+            if (btn) { btn.click(); }
+            else { scrollToTopRobust(); }
+        }
+        function setupVoltarTopoBtn() {
+            var btn = document.getElementById('float-voltar-topo-btn');
+            if (btn) {
+                btn.onclick = scrollToTopRobust;
+                let scrollableElement = findScrollableContainer();
+                if (scrollableElement) {
+                    scrollableElement.addEventListener('scroll', function() {
+                        if (scrollableElement.scrollTop > 200) {
+                            btn.style.display = 'flex';
+                        } else {
+                            btn.style.display = 'none';
+                        }
+                    });
+                    if (scrollableElement.scrollTop > 200) {
+                        btn.style.display = 'flex';
+                    } else {
+                        btn.style.display = 'none';
+                    }
+                } else {
+                    window.addEventListener('scroll', function() {
+                        if (window.scrollY > 200) {
+                            btn.style.display = 'flex';
+                        } else {
+                            btn.style.display = 'none';
+                        }
+                    });
+                    if (window.scrollY > 200) {
+                        btn.style.display = 'flex';
+                    } else {
+                        btn.style.display = 'none';
+                    }
+                }
+            }
+        }
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', setupVoltarTopoBtn);
+        } else {
+            setupVoltarTopoBtn();
+        }
+        </script>
+    """, unsafe_allow_html=True)
+
+    # Exemplo de botão Streamlit que dispara o scroll para o topo via JS
+    if st.button("Ir para o Topo", key="btn_ir_para_topo"):
+        st.components.v1.html("<script>window.simulateScrollToTopClick && window.simulateScrollToTopClick();</script>", height=0, width=0)
+
+def _render_table_view(sorted_items_in_status: List[Dict[str, Any]], status: str):
+    """
+    Renderiza a visualização de processos em formato de tabela.
+    Inclui lógica para exibir grupos consolidados e seus membros.
+    """
+    table_data = []
+    table_columns = ["Processo", "Status", "Modal", "Fornecedor", "Nº Invoice", "Qtd", "Valor (US$)", "Data Compra", "Data Embarque", "Prev. Pichau", "Observação", "Ações"]
+
+    # Atualiza o total de linhas disponíveis para o lazy loading da tabela
+    st.session_state.total_rows_available = len(sorted_items_in_status)
+    
+    # Prepara os dados limitados ao número atual de linhas carregadas para a tabela
+    limited_items_for_table = sorted_items_in_status[:st.session_state.table_rows_loaded]
+
+    for item in limited_items_for_table: # Itera sobre os itens limitados para a tabela
+        if item.get('_is_consolidated_group'):
+            group_data = item['group_data']
+            principal_id = group_data.get('principal_id', 'N/A')
+            principal_process_data = next((m for m in group_data.get('members_data', []) if str(m.get('id')) == str(principal_id)), None)
+            
+            # Linha para o grupo consolidado
+            table_data.append({
+                "Processo": f"📦 Grupo: {principal_id}",
+                "Status": principal_process_data.get('Status_Geral', 'Consolidado') if principal_process_data else 'Consolidado',
+                "Modal": principal_process_data.get('Modal', 'Consolidado') if principal_process_data else 'Consolidado',
+                "Fornecedor": "",
+                "Nº Invoice": "",
+                "Qtd": "",
+                "Valor (US$)": "",
+                "Data Compra": "",
+                "Data Embarque": "",
+                "Prev. Pichau": _format_date_display(principal_process_data.get('Previsao_Pichau')) if principal_process_data else '',
+                "Observação": f"Membros: {len(group_data.get('members_data', []))}",
+                "Ações": "" # Ações para o grupo consolidado podem ser adicionadas aqui, se necessário
+            })
+            # Linhas para os membros do grupo consolidado
+            for member_row_dict in group_data.get('members_data', []):
+                table_data.append({
+                    "Processo": f"  - {member_row_dict.get('Processo_Novo', 'N/A')}", # Indentação para membros
+                    "Status": member_row_dict.get('Status_Geral', 'Sem Status'),
+                    "Modal": member_row_dict.get('Modal', 'Sem Modal'),
+                    "Fornecedor": member_row_dict.get('Fornecedor', 'N/A'),
+                    "Nº Invoice": member_row_dict.get('N_Invoice', 'N/A'),
+                    "Qtd": _format_int_display(member_row_dict.get('Quantidade', 0)),
+                    "Valor (US$)": _format_usd_display(member_row_dict.get('Valor_USD', 0.0)),
+                    "Data Compra": _format_date_display(member_row_dict.get('Data_Compra')),
+                    "Data Embarque": _format_date_display(member_row_dict.get('Data_Embarque')),
+                    "Prev. Pichau": _format_date_display(member_row_dict.get('Previsao_Pichau')),
+                    "Observação": member_row_dict.get('Observacao', ''),
+                    "Ações": "Opções..."
+                })
+        else:
+            # Linha para processo não consolidado
+            row_dict = item
+            table_data.append({
+                "Processo": row_dict.get('Processo_Novo', 'N/A'),
+                "Status": row_dict.get('Status_Geral', 'Sem Status'),
+                "Modal": row_dict.get('Modal', 'Sem Modal'),
+                "Fornecedor": row_dict.get('Fornecedor', 'N/A'),
+                "Nº Invoice": row_dict.get('N_Invoice', 'N/A'),
+                "Qtd": _format_int_display(row_dict.get('Quantidade', 0)),
+                "Valor (US$)": _format_usd_display(row_dict.get('Valor_USD', 0.0)),
+                "Data Compra": _format_date_display(row_dict.get('Data_Compra')),
+                "Data Embarque": _format_date_display(row_dict.get('Data_Embarque')),
+                "Prev. Pichau": _format_date_display(row_dict.get('Previsao_Pichau')),
+                "Observação": row_dict.get('Observacao', ''),
+                "Ações": "Opções..."
+            })
+    
+    if table_data:
+        df_display = pd.DataFrame(table_data, columns=table_columns)
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        
+        # Implementação de lazy loading para a tabela
+        if st.session_state.table_rows_loaded < st.session_state.total_rows_available:
+            remaining_rows = st.session_state.total_rows_available - st.session_state.table_rows_loaded
+            rows_to_load_next = min(TABLE_ROWS_INCREMENT, remaining_rows)
+            col_center_button = st.columns([1, 2, 1])[1]
+            with col_center_button:
+                if st.button(f"📋 Carregar mais {rows_to_load_next} linhas ({remaining_rows} restantes)", key=f"load_more_table_{status}", use_container_width=True):
+                    _load_more_table_rows()
+                    st.rerun() # Força o rerun para exibir as novas linhas
+        
+        if st.session_state.total_rows_available > 0:
+            st.caption(f"Exibindo {len(table_data)} de {st.session_state.total_rows_available} processos")
     else:
-        st.info("Nenhum processo de importação encontrado. Adicione um novo ou importe via arquivo.")
-
-    st.markdown("---")
-    col_import_data_btn, _ = st.columns([0.2, 0.8])
-    with col_import_data_btn:
-        if st.button("Importação de Dados", key="open_import_options_button_bottom"):
-            st.session_state.show_import_popup = True
-            st.rerun()
-
-    st.write("Esta tela permite gerenciar o follow-up de processos de importação.")
-
-    st.markdown("---")
-    conn_check = db_manager.conectar_followup_db()
-    if conn_check:
-        try:
-            db_manager.criar_tabela_followup(conn_check)
-        except Exception as e:
-            st.error(f"Erro ao criar/verificar tabelas do DB de Follow-up: {e}")
-        finally:
-            conn_check.close()
-    else:
-        db_path = db_manager.get_followup_db_path() if hasattr(db_manager, 'get_followup_db_path') else "Caminho Desconhecido"
-        st.error(f"Não foi possível conectar ao banco de dados de Follow-up em: {db_path}")
-
+        st.info(f"Nenhum processo encontrado para o status {status} na visualização de tabela.")

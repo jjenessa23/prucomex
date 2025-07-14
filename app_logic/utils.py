@@ -4,6 +4,7 @@ import base64
 from datetime import datetime # Adicionado
 import requests # Adicionado
 import logging # Adicionado
+import pytz # Adicionado para suporte a fuso horário
 
 logger = logging.getLogger(__name__) # Adicionado
 
@@ -98,8 +99,12 @@ def get_dolar_cotacao():
     """
     Busca a cotação do dólar (abertura e PTAX) da API do Banco Central.
     Retorna um dicionário com as cotações ou None em caso de erro.
+    Inclui timestamp no fuso horário de Brasília.
     """
-    today = datetime.now().strftime('%m-%d-%Y') # Formato MM-DD-AAAA exigido pela API
+    # Configurar timezone de Brasília
+    brasilia_tz = pytz.timezone('America/Sao_Paulo')
+    now_brasilia = datetime.now(brasilia_tz)
+    today = now_brasilia.strftime('%m-%d-%Y') # Formato MM-DD-AAAA exigido pela API
     
     # URL da API do Banco Central para boletins do dólar, usando o endpoint CotacaoMoedaPeriodo
     api_url = f"https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@moeda='USD'&@dataInicial='{today}'&@dataFinalCotacao='{today}'&$top=100&$format=json&$select=cotacaoCompra,cotacaoVenda,dataHoraCotacao,tipoBoletim"
@@ -113,7 +118,10 @@ def get_dolar_cotacao():
             "abertura_compra": "N/A",
             "abertura_venda": "N/A",
             "ptax_compra": "N/A",
-            "ptax_venda": "N/A"
+            "ptax_venda": "N/A",
+            "data": now_brasilia.isoformat(),  # Data/hora da consulta em horário de Brasília
+            "timestamp_brasilia": now_brasilia.timestamp(),  # Timestamp para ordenação
+            "fonte": "Banco Central do Brasil"
         }
 
         # A API retorna uma lista de dicionários dentro da chave 'value'

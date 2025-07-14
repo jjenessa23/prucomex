@@ -1,3 +1,5 @@
+from time import sleep
+import pytz
 import streamlit as st
 import os
 import base64
@@ -5,8 +7,21 @@ from datetime import datetime
 import logging
 import streamlit.components.v1 as components # Importar components para HTML/JS
 
+# Importações para envio de e-mail
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+
 # Importar funções de utilidade do módulo utils
 from app_logic.utils import set_background_image, get_dolar_cotacao
+
+# NOVO: Importar funções do db_utils para salvar e carregar frete internacional
+from app_logic.db_utils import (
+    inserir_ou_atualizar_frete_internacional,
+    get_frete_internacional_by_referencia
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,15 +99,307 @@ def _copy_to_clipboard(text_to_copy, button_key):
 # --- Função para obter a saudação conforme o horário ---
 def _get_greeting():
     """
-    Retorna uma saudação apropriada baseada na hora atual.
+    Retorna uma saudação apropriada baseada na hora atual (GMT-3).
     """
-    current_hour = datetime.now().hour
+    # Define o fuso horário de Brasília (que é GMT-3 na maior parte do ano)
+    brasilia_tz = pytz.timezone('America/Sao_Paulo')
+    # Obtém a hora atual no fuso horário de Brasília
+    current_hour = datetime.now(brasilia_tz).hour
+
     if 6 <= current_hour < 12:
         return "Bom dia"
     elif 12 <= current_hour < 18:
         return "Boa tarde"
     else:
         return "Boa noite"
+
+# NOVO: Função para salvar o frete internacional no banco de dados
+def _save_frete_internacional(frete_type, total_calculated_brl, iof_usd_val, dolar_cotacao_usado):
+    referencia_processo = st.session_state.get('referencia_pch', 'N/A').strip()
+    if not referencia_processo or referencia_processo == 'N/A':
+        st.error("Por favor, insira uma Referência de Processo válida antes de salvar.")
+        return False
+
+    frete_data = {
+        "referencia_processo": referencia_processo,
+        "tipo_frete": frete_type,
+        "data_calculo": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "dolar_cotacao_usado": dolar_cotacao_usado
+    }
+
+    if frete_type == "Aéreo":
+        frete_data.update({
+            "taxa_awb_aereo": st.session_state.taxa_awb_aereo,
+            "dta_aereo": st.session_state.dta_aereo,
+            "agency_fee_aereo": st.session_state.agency_fee_aereo,
+            "chd_aereo": st.session_state.chd_aereo,
+            "iof_aereo_usd": iof_usd_val,
+            "total_aereo_brl": total_calculated_brl,
+            # Campos marítimos zerados para consistência
+            "frete_bl_maritimo": 0.0,
+            "thc_maritimo": 0.0,
+            "taxas_destino_dolar_maritimo": 0.0,
+            "taxas_destino_real_maritimo": 0.0,
+            "agency_fee_maritimo": 0.0,
+            "iof_maritimo_usd": 0.0,
+            "total_maritimo_brl": 0.0
+        })
+    elif frete_type == "Marítimo":
+        frete_data.update({
+            "frete_bl_maritimo": st.session_state.frete_bl_maritimo,
+            "thc_maritimo": st.session_state.thc_maritimo,
+            "taxas_destino_dolar_maritimo": st.session_state.taxas_destino_dolar_maritimo,
+            "taxas_destino_real_maritimo": st.session_state.taxas_destino_real_maritimo,
+            "agency_fee_maritimo": st.session_state.agency_fee_maritimo,
+            "iof_maritimo_usd": iof_usd_val,
+            "total_maritimo_brl": total_calculated_brl,
+            # Campos aéreos zerados para consistência
+            "taxa_awb_aereo": 0.0,
+            "dta_aereo": 0.0,
+            "agency_fee_aereo": 0.0,
+            "chd_aereo": 0.0,
+            "iof_aereo_usd": 0.0,
+            "total_aereo_brl": 0.0
+        })
+    
+    if inserir_ou_atualizar_frete_internacional(frete_data):
+        st.success(f"Cálculo de frete {frete_type} para a referência '{referencia_processo}' salvo/atualizado com sucesso!")
+        st.toast(f"✅ E-mail enviado com sucesso!", icon="✅")
+        sleep (3) # Pausa de 3 segundos para o usuário ver a mensagem
+        return True
+    else:
+        st.error(f"Falha ao salvar/atualizar cálculo de frete {frete_type} para a referência '{referencia_processo}'.")
+        return False
+
+# NOVO: Função para carregar o frete internacional do banco de dados
+def _load_frete_internacional():
+    referencia_processo = st.session_state.get('referencia_pch', '').strip()
+    if not referencia_processo:
+        # st.info("Insira uma Referência de Processo para carregar o frete existente.")
+        return
+
+    existing_frete_data = get_frete_internacional_by_referencia(referencia_processo)
+
+    if existing_frete_data:
+        st.info(f"Dados de frete para a referência '{referencia_processo}' carregados. Tipo: {existing_frete_data['tipo_frete']}.")
+        
+        # Atualiza o tipo de frete selecionado na UI
+        st.session_state.frete_type_select = existing_frete_data.get('tipo_frete', 'Aéreo')
+
+        # Atualiza o dólar de venda (abertura) editável
+        st.session_state.dolar_venda_abertura_editable = existing_frete_data.get('dolar_cotacao_usado', 0.0)
+
+        if existing_frete_data.get('tipo_frete') == "Aéreo":
+            st.session_state.taxa_awb_aereo = existing_frete_data.get('taxa_awb_aereo', 0.0)
+            st.session_state.dta_aereo = existing_frete_data.get('dta_aereo', 0.0)
+            st.session_state.agency_fee_aereo = existing_frete_data.get('agency_fee_aereo', 0.0)
+            st.session_state.chd_aereo = existing_frete_data.get('chd_aereo', 0.0)
+            st.session_state.total_comparacao_aereo = existing_frete_data.get('total_aereo_brl', 0.0) # Assume que este é o total salvo para comparação
+            _clear_maritimo_fields() # Limpa os campos do outro tipo para consistência
+        elif existing_frete_data.get('tipo_frete') == "Marítimo":
+            st.session_state.frete_bl_maritimo = existing_frete_data.get('frete_bl_maritimo', 0.0)
+            st.session_state.thc_maritimo = existing_frete_data.get('thc_maritimo', 0.0)
+            st.session_state.taxas_destino_dolar_maritimo = existing_frete_data.get('taxas_destino_dolar_maritimo', 0.0)
+            st.session_state.taxas_destino_real_maritimo = existing_frete_data.get('taxas_destino_real_maritimo', 0.0)
+            st.session_state.agency_fee_maritimo = existing_frete_data.get('agency_fee_maritimo', 0.0)
+            _clear_aereo_fields() # Limpa os campos do outro tipo para consistência
+        
+        # Força um re-render para que os campos sejam preenchidos
+        st.rerun()
+    # else:
+        # st.info(f"Nenhum cálculo de frete encontrado para a referência '{referencia_processo}'.")
+
+# NOVO: Função para gerar o conteúdo do e-mail de frete internacional
+def _generate_frete_email_content(frete_type, referencia_digitada, total_brl, iof_usd, dolar_cotacao_usado, saudacao, usuario_sistema):
+    email_subject = f"{referencia_digitada} - Pagamento de frete internacional Ethima"
+    
+    # Formatação dos valores para o corpo do e-mail
+    total_brl_formatted = _format_currency(total_brl, prefix='R$ ')
+    
+
+    email_body_plaintext = f"""
+{saudacao} Mayra,
+
+Gentileza realizar depósito para a Ethima Logistics:
+Processo: {referencia_digitada}
+Valor total a depositar: {total_brl_formatted}
+Serviço: Frete e taxas de embarque {frete_type}.
+
+
+Chave PIX: financeiro@ethima.com.br
+Favorecido: Ethima Comercio Exterior LTDA
+Banco: Itaú Unibanco S.A. - 341
+Agência: 8262
+Conta: 41461-1
+CNPJ: 21.129.987/0001-19
+
+Conforme instruções em anexo.
+Obs.: Invoice da importação em anexo.
+
+Esta cobrança é válida para pagamento hoje, devido à taxa de conversão diária. Caso esta cobrança não seja paga nesta data, gentileza
+solicitar ao nosso setor financeiro taxa cambial atualizada na data do pagamento.
+
+Obrigado(a),
+{usuario_sistema}
+    """
+    return email_subject, email_body_plaintext
+
+# NOVO: Função para enviar e-mail com anexos (adaptada de outras telas)
+def _send_email_with_attachments_frete_internacional(to_emails, subject, body, uploaded_files):
+    """
+    Envia um e-mail com anexos via Gmail SMTP.
+    Os e-mails são lidos dos segredos do Streamlit.
+    """
+    try:
+        remetente = st.secrets["gmail_credentials"]["gmail_email"]
+        senha_aplicativo = st.secrets["gmail_credentials"]["gmail_app_password"]
+
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = remetente
+        msg["To"] = ", ".join(to_emails)
+
+        msg.attach(MIMEText(body, "plain"))
+
+        for uploaded_file in uploaded_files:
+            try:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(uploaded_file.read())
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition",
+                    f"attachment; filename= {uploaded_file.name}",
+                )
+                msg.attach(part)
+            except Exception as e:
+                st.warning(f"Erro ao anexar o arquivo '{uploaded_file.name}': {e}. O e-mail será enviado sem este anexo.")
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(remetente, senha_aplicativo)
+            smtp.send_message(msg)
+        st.success("E-mail enviado com sucesso!")
+        return True
+    except KeyError as e:
+        st.error(f"Credenciais de e-mail não configuradas nos segredos do Streamlit. Verifique a seção [gmail_credentials] e as chaves 'gmail_email' e 'gmail_app_password'. Erro: {e}")
+        return False
+    except Exception as e:
+        st.error(f"Erro ao enviar o e-mail: {e}. Verifique se a 'senha de aplicativo' do Gmail está correta e se o acesso SMTP está liberado.")
+        return False
+
+# NOVO: Função para exibir a seção unificada de envio de e-mail
+def _display_email_sending_section(frete_type, total_calculated_brl, iof_usd_val, dolar_cotacao_usado):
+    st.markdown("""
+    <style>
+        /* Campo de texto normal */
+        .stTextInput > div > div > input {
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+        }
+        
+        /* Para área de texto também */
+        .stTextArea > div > div > textarea {
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)    
+    
+    st.markdown("---")
+    st.markdown("#### Enviar E-mail e Salvar no Banco de Dados")
+
+    # Preenche os campos do formulário de envio de e-mail
+    saudacao = _get_greeting()
+    usuario_sistema = st.session_state.get('user_info', {}).get('username', 'Usuário do Sistema')
+    referencia_digitada = st.session_state.get('referencia_pch', 'PCH-XXXXX-XX')
+
+    email_subject_generated, email_body_plaintext_generated = _generate_frete_email_content(
+        frete_type, referencia_digitada, total_calculated_brl, iof_usd_val, dolar_cotacao_usado, saudacao, usuario_sistema
+    )
+
+    # Inicializa ou atualiza os valores no session_state para os widgets
+    st.session_state.setdefault('frete_email_to', "jjenessa23@gmail.com")
+    st.session_state.frete_email_subject_send = email_subject_generated
+    st.session_state.frete_email_body_send = email_body_plaintext_generated
+    st.session_state.setdefault('frete_email_attachments_list', [])
+
+    to_emails_input = st.text_input(
+        "Para (e-mails separados por vírgula):",
+        value=st.session_state.frete_email_to,
+        key=f"frete_send_to_emails_input_{frete_type}"
+    )
+    st.session_state.frete_email_to = to_emails_input.strip()
+
+    st.session_state.frete_email_subject_send = st.text_input(
+    "Assunto:",
+    value=st.session_state.frete_email_subject_send,
+    key=f"frete_send_email_subject_input_{frete_type}"
+    )
+    
+    st.session_state.frete_email_body_send = st.text_area(
+        "Corpo do E-mail:",
+        value=st.session_state.frete_email_body_send,
+        height=300,
+        key=f"frete_send_email_body_input_{frete_type}"
+    )
+    
+    uploaded_files = st.file_uploader(
+        "Arraste e solte ou selecione arquivos para anexar (múltiplos)",
+        type=None,
+        accept_multiple_files=True,
+        key=f"frete_send_email_attachments_uploader_{frete_type}"
+    )
+
+    # Atualiza a lista de anexos se novos arquivos foram carregados
+    if uploaded_files:
+        current_attached_names = {f.name for f in st.session_state.frete_email_attachments_list}
+        for file in uploaded_files:
+            if file.name not in current_attached_names:
+                st.session_state.frete_email_attachments_list.append(file)
+    
+    # Exibe os arquivos atualmente anexados (e permite remover)
+    if st.session_state.frete_email_attachments_list:
+        st.markdown("###### Arquivos anexados:")
+        for i, file in enumerate(st.session_state.frete_email_attachments_list):
+            col_file_name, col_remove_btn = st.columns([0.8, 0.2])
+            with col_file_name:
+                st.write(f"- {file.name}")
+            with col_remove_btn:
+                if st.button("Remover", key=f"frete_remove_attachment_{frete_type}_{i}"):
+                    st.session_state.frete_email_attachments_list.pop(i)
+                    st.rerun()
+
+    col1, col2 = st.columns([0.5, 0.2])
+    with col1:
+        if st.button("Enviar E-mail e Salvar", key=f"frete_send_email_and_save_btn_{frete_type}", use_container_width=True):
+            if not st.session_state.frete_email_to:
+                st.warning("Por favor, preencha o(s) destinatário(s) do e-mail.")
+            else:
+                list_of_recipients = [email.strip() for email in st.session_state.frete_email_to.split(',') if email.strip()]
+                
+                if list_of_recipients:
+                    with st.spinner("Enviando e-mail e salvando no banco de dados..."):
+                        email_sent_successfully = _send_email_with_attachments_frete_internacional(
+                            to_emails=list_of_recipients,
+                            subject=st.session_state.frete_email_subject_send,
+                            body=st.session_state.frete_email_body_send,
+                            uploaded_files=st.session_state.frete_email_attachments_list
+                        )
+                        
+                        if email_sent_successfully:
+                            _save_frete_internacional(
+                                frete_type, 
+                                total_calculated_brl, 
+                                iof_usd_val, 
+                                dolar_cotacao_usado
+                            )
+                            
+                    st.rerun()
+                else:
+                    st.warning("Nenhum destinatário válido encontrado.")
 
 def show_calculo_frete_internacional_page():
     """
@@ -104,6 +411,12 @@ def show_calculo_frete_internacional_page():
 
     st.subheader("Cálculo Frete Internacional")
 
+    # NOVO: Exibição do logo da Ethima
+    app_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    logo_ethima_path = os.path.join(app_root_dir, 'assets', 'ethima.png') # Assumindo ethima.png na pasta assets
+    
+        
+            
     # Fetch dollar rates
     dolar_data = get_dolar_cotacao()
     
@@ -122,7 +435,7 @@ def show_calculo_frete_internacional_page():
 
     # Exibir cotações do dólar no topo (APENAS ABERTURA)
     st.markdown("#### Cotação do Dólar para Cálculos")
-    col_dv_abertura, col_dv3_abertura, col3 = st.columns(3)
+    col_dv_abertura, col_dv3_abertura, col3 = st.columns([0.4,0.4,0.2])
     with col_dv_abertura:
         # Campo Dólar Venda (Abertura) agora é editável
         st.session_state.dolar_venda_abertura_editable = st.number_input(
@@ -138,24 +451,29 @@ def show_calculo_frete_internacional_page():
         st.metric(label="Dólar + 3% (Abertura)", 
               value=f"{dolar_abertura_3_percent_calculated:,.4f}".replace('.', '#').replace(',', '.').replace('#', ','))
     st.markdown("---")
-
+    with col3:
+        if os.path.exists(logo_ethima_path):
+            st.image(logo_ethima_path, width=150, caption="Ethima")
+        else:
+            st.warning(f"Logo da Ethima não encontrada. Verifique o caminho do arquivo: {logo_ethima_path}. Existe? {os.path.exists(logo_ethima_path)}") # Adicionado depuração
     # Campo de referência PCH-*****
     # Pré-preencher o campo de referência
     if 'referencia_pch' not in st.session_state:
         st.session_state.referencia_pch = "PCH-"
-    col1, col2 = st.columns([1, 3])  # Proporção 1:2
-    with col1:
-        st.text_input(
+    
+    # NOVO: Adicionado um callback para carregar os dados do frete quando a referência for alterada
+    referencia_input = st.text_input(
         "Referência (Ex: PCH-*****)", 
         key="referencia_pch", 
         value=st.session_state.referencia_pch,
-        
+        on_change=_load_frete_internacional # Chama a função de carregamento ao mudar
     )
 
 
     # Select box for freight type
     col1, col2 = st.columns([1, 3])  # Proporção 1:2
     with col1:
+        # O valor inicial do selectbox deve vir do session_state, que é atualizado pela função de carregamento
         frete_type = st.selectbox(
         "Selecione o Tipo de Frete",
         ("Aéreo", "Marítimo"),
@@ -204,7 +522,7 @@ def show_calculo_frete_internacional_page():
                 value=st.session_state.chd_aereo,
             )
             # O cálculo do IOF deve usar o dólar editável
-            iof_aereo_calculated = st.session_state.taxa_awb_aereo * 0.035
+            iof_aereo_calculated_usd = st.session_state.taxa_awb_aereo * 0.0038
             
 
             st.markdown("###### Outros Custos (R$)")
@@ -233,9 +551,9 @@ def show_calculo_frete_internacional_page():
             taxa_awb_brl = st.session_state.taxa_awb_aereo * dolar_abertura_3_percent_calculated
             dta_brl = st.session_state.dta_aereo * dolar_abertura_3_percent_calculated
             chd_brl = st.session_state.chd_aereo * dolar_abertura_3_percent_calculated
-            iof_brl = iof_aereo_calculated * dolar_abertura_3_percent_calculated
+            iof_aereo_brl = iof_aereo_calculated_usd * dolar_abertura_3_percent_calculated
 
-            total_aereo_brl_calculated = (taxa_awb_brl + dta_brl + iof_brl + chd_brl) + st.session_state.agency_fee_aereo
+            total_aereo_brl_calculated = (taxa_awb_brl + dta_brl + iof_aereo_brl + chd_brl) + st.session_state.agency_fee_aereo
             
             diferenca_aereo = total_aereo_brl_calculated - st.session_state.total_comparacao_aereo
 
@@ -244,7 +562,7 @@ def show_calculo_frete_internacional_page():
             st.write(f"Taxa AWB : {_format_currency(st.session_state.taxa_awb_aereo, prefix='$ ')}")
             st.write(f"DTA : {_format_currency(st.session_state.dta_aereo, prefix='$ ')}")
             st.write(f"CHD : {_format_currency(st.session_state.chd_aereo, prefix='$ ')}")
-            st.write(f"IOF : {_format_currency(iof_aereo_calculated, prefix='$ ')}")
+            st.write(f"IOF : {_format_currency(iof_aereo_calculated_usd, prefix='$ ')}")
             st.write(f"Agency Fee (R$) : {_format_currency(st.session_state.agency_fee_aereo, prefix='R$ ')}")
 
             st.markdown("---")
@@ -257,72 +575,15 @@ def show_calculo_frete_internacional_page():
                 # Usa a função de callback _clear_aereo_fields para resetar os valores
                 st.button("LIMPAR Aéreo", key="clear_aereo", on_click=_clear_aereo_fields)
 
-            # Controlar a abertura do expander
-            if 'email_expander_open' not in st.session_state:
-                st.session_state.email_expander_open = False
-
-            with col_buttons_aereo[1]:
-                if st.button("Enviar Frete Internacional Aéreo", key="send_aereo"):
-                    st.session_state.email_expander_open = True
-                    # st.rerun() # Removido st.rerun() desnecessário
-
-            # Expander para copiar o conteúdo do e-mail
-            # Usar st.session_state.email_expander_open para controlar o estado do expander
-            with st.expander("Conteúdo do E-mail", expanded=st.session_state.email_expander_open):
-                
-                
-                # Assunto do E-mail
-                referencia_digitada = st.session_state.get('referencia_pch', 'PCH-XXXXX-XX')
-                email_subject_content = f"{referencia_digitada} - Pagamento de frete internacional Ethima"
-                email_subject = st.text_area("Assunto do E-mail", value=email_subject_content, height=70, key="email_subject_aereo") 
-                if st.button("Copiar Assunto", key="copy_subject_aereo"):
-                    _copy_to_clipboard(email_subject, "copy_subject_aereo_js")
-
-                
-
-                # Corpo do E-mail
-                saudacao = _get_greeting()
-                # Obter o nome do usuário logado
-                usuario_sistema = st.session_state.get('user_info', {}).get('username', 'Usuário do Sistema')
-
-                email_body_content = f"""
-{saudacao} Mayra,
-
-Gentileza realizar depósito para a Ethima Logistics:
-Processo: {referencia_digitada}
-Valor total a depositar: {_format_currency(diferenca_aereo, prefix='R$ ')}
-Serviço: Frete e taxas de embarque Aéreo.
-
-Chave PIX: financeiro@ethima.com.br
-Favorecido: Ethima Comercio Exterior LTDA
-Banco: Itaú Unibanco S.A. - 341
-Agência: 8262
-Conta: 41461-1
-CNPJ: 21.129.987/0001-19
-
-Conforme instruções em anexo.
-Obs.: Invoice da importação em anexo.
-
-Esta cobrança é válida para pagamento hoje, devido à taxa de conversão diária. Caso esta cobrança não seja paga nesta data, gentileza
-solicitar ao nosso setor financeiro taxa cambial atualizada na data do pagamento.
-
-Obrigado(a),
-{usuario_sistema}
-                """
-                
-                email_body = st.text_area("Corpo do E-mail", value=email_body_content, height=300, key="email_body_aereo")
-                
-                btn_copy, btn_exit = st.columns(2)
-                                    
-                with btn_copy:
-                    if st.button("Copiar Corpo", key="copy_body_aereo"):
-                        _copy_to_clipboard(email_body, "copy_body_aereo_js")
-                        
-                        
-                with btn_exit:
-                    if st.button("Fechar E-mail", key="close_expander_aereo"):
-                        st.session_state.email_expander_open = False
-                        # st.rerun() # Removido st.rerun() desnecessário       
+            
+            
+            # Chamada para a nova seção unificada de envio de e-mail
+            _display_email_sending_section(
+                frete_type, 
+                diferenca_aereo, # Total calculado para Aéreo
+                iof_aereo_calculated_usd, 
+                st.session_state.dolar_venda_abertura_editable
+            )
                     
 
     elif frete_type == "Marítimo":
@@ -365,8 +626,8 @@ Obrigado(a),
         thc_brl = st.session_state.thc_maritimo 
         taxas_destino_dolar_brl = st.session_state.taxas_destino_dolar_maritimo * dolar_abertura_3_percent_calculated
         
-        # Cálculo do IOF: Frete BL($) * 0,035 = IOF($)
-        iof_maritimo_calculated_usd = st.session_state.frete_bl_maritimo * 0.035
+        # Cálculo do IOF: Frete BL($) * 0,0038 = IOF($)
+        iof_maritimo_calculated_usd = st.session_state.frete_bl_maritimo * 0.0038
         iof_maritimo_brl = iof_maritimo_calculated_usd * dolar_abertura_3_percent_calculated
 
         total_maritimo_brl_calculated = frete_bl_brl + thc_brl + taxas_destino_dolar_brl + st.session_state.taxas_destino_real_maritimo + iof_maritimo_brl + st.session_state.agency_fee_maritimo
@@ -402,67 +663,25 @@ Obrigado(a),
             # Usa a função de callback _clear_maritimo_fields para resetar os valores
             st.button("LIMPAR Marítimo", key="clear_maritimo", on_click=_clear_maritimo_fields)
         
-        # Controlar a abertura do expander
-        if 'email_expander_open_maritimo' not in st.session_state:
-            st.session_state.email_expander_open_maritimo = False
-
+        # NOVO: Botão para Salvar Frete Marítimo
         with col_buttons_maritimo[1]:
-            if st.button("Enviar Frete Internacional Marítimo", key="send_maritimo"):
-                st.session_state.email_expander_open_maritimo = True
-                # st.rerun() # Removido st.rerun() desnecessário
-        
-        # Expander para copiar o conteúdo do e-mail (Marítimo)
-        with st.expander("Conteúdo do E-mail", expanded=st.session_state.email_expander_open_maritimo):
-            
-            # Assunto do E-mail
-            referencia_digitada = st.session_state.get('referencia_pch', 'PCH-XXXXX-XX')
-            email_subject_content = f"{referencia_digitada} - Pagamento de frete internacional Ethima"
-            email_subject = st.text_area("Assunto do E-mail", value=email_subject_content, height=70, key="email_subject_maritimo") 
-            if st.button("Copiar Assunto", key="copy_subject_maritimo"):
-                _copy_to_clipboard(email_subject, "copy_subject_maritimo_js")
+            if st.button("Salvar Frete Marítimo", key="save_maritimo"):
+                _save_frete_internacional(
+                    "Marítimo", 
+                    total_maritimo_brl_calculated, 
+                    iof_maritimo_calculated_usd,
+                    st.session_state.dolar_venda_abertura_editable
+                )
 
-            # Corpo do E-mail
-            saudacao = _get_greeting()
-            usuario_sistema = st.session_state.get('user_info', {}).get('username', 'Usuário do Sistema')
-
-            email_body_content = f"""
-{saudacao} Mayra,
-
-Gentileza realizar depósito para a Ethima Logistics:
-Processo: {referencia_digitada}
-Valor total a depositar: {_format_currency(total_maritimo_brl_calculated, prefix='R$ ')}
-Serviço: Frete e taxas de embarque Maritimo.
-
-Chave PIX: financeiro@ethima.com.br
-Favorecido: Ethima Comercio Exterior LTDA
-Banco: Itaú Unibanco S.A. - 341
-Agência: 8262
-Conta: 41461-1
-CNPJ: 21.129.987/0001-19
-
-Conforme instruções em anexo.
-Obs.: Invoice da importação em anexo.
-
-Esta cobrança é válida para pagamento hoje, devido à taxa de conversão diária. Caso esta cobrança não seja paga nesta data, gentileza
-solicitar ao nosso setor financeiro taxa cambial atualizada na data do pagamento.
-
-Obrigado(a),
-{usuario_sistema}
-            """
-            
-            email_body = st.text_area("Corpo do E-mail", value=email_body_content, height=300, key="email_body_maritimo")
-            
-            btn_copy_maritimo, btn_exit_maritimo = st.columns(2)
-                                
-            with btn_copy_maritimo:
-                if st.button("Copiar Corpo", key="copy_body_maritimo"):
-                    _copy_to_clipboard(email_body, "copy_body_maritimo_js")
-                    
-            with btn_exit_maritimo:
-                if st.button("Fechar E-mail", key="close_expander_maritimo"):
-                    st.session_state.email_expander_open_maritimo = False
-                    # st.rerun() # Removido st.rerun() desnecessário       
+        # Chamada para a nova seção unificada de envio de e-mail
+        _display_email_sending_section(
+            frete_type, 
+            total_maritimo_brl_calculated, # Total calculado para Marítimo
+            iof_maritimo_calculated_usd,
+            st.session_state.dolar_venda_abertura_editable
+        )
                     
 
     st.markdown("---")
     st.write("Esta tela permite calcular os custos de frete internacional (aéreo ou marítimo).")
+

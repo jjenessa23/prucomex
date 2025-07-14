@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import logging
 import os
-from datetime import datetime
-import urllib.parse # Importa para codificar URLs para o mailto
+from datetime import datetime, date # Importar date também
+import urllib.parse # Para codificar URLs para o mailto
 
 # Importa as funções reais do db_utils
 from db_utils import get_declaracao_by_id, update_declaracao_field
@@ -15,6 +15,18 @@ except ImportError:
     logging.warning("Módulo 'app_logic.utils' não encontrado. Funções de imagem de fundo podem não funcionar.")
     def set_background_image(image_path, opacity=None):
         pass # Função mock se utils não for encontrado
+
+# Importa o módulo de gerenciamento de banco de dados para follow-up
+# Será usado para acessar o st.session_state.processo_data que vem do follow-up
+from app_logic import followup_db_manager
+
+# Importações para envio de e-mail
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +66,36 @@ def _format_int(value):
 # --- Funções de Geração de Conteúdo de E-mail ---
 
 def generate_fn_email_content():
+    st.markdown("""
+    <style>
+        /* Campo de texto normal */
+        .stTextInput > div > div > input {
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+        }
+        
+        /* Para área de texto também */
+        .stTextArea > div > div > textarea {
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
     """Gera o conteúdo do e-mail para FN Transportes."""
     di_data = st.session_state.fn_transportes_di_data
     referencia_processo = st.session_state.fn_transportes_processo_ref
     valor_total_depositar = st.session_state.fn_transportes_total_a_depositar_display
+    
+    # Obtém a data de vencimento do session_state, formatando-a
+    data_vencimento_str = st.session_state.fn_transportes_data_vencimento.strftime("%d/%m/%Y")
 
     current_hour = datetime.now().hour
-    saudacao = "Bom dia" if 6 <= current_hour < 12 else "Boa tarde"
+    saudacao = "Bom dia" if 9 <= current_hour < 15 else "Boa tarde"
     usuario_programa = st.session_state.get('user_info', {}).get('username', 'usuário do sistema')
-    data_hoje = datetime.now().strftime("%d/%m/%Y")
     
     # Dados bancários fixos para FN Transportes
     dados_bancarios = """Dados Bancários:
@@ -79,7 +112,7 @@ Gentileza realizar o pagamento para a FN TRANSPORTES
 
 Referência dos Processos: {referencia_processo}
 Valor total: {valor_total_depositar}
-Vencimento: {data_hoje}
+Vencimento: {data_vencimento_str}
 Serviço: Frete rodoviário de Navegantes para Joinville.
 
 {dados_bancarios}
@@ -94,6 +127,60 @@ Obrigado,
     
     return email_subject, email_body_plaintext
 
+# --- Função para Enviar E-mail com Anexos (adaptada de Pac Log Elo) ---
+def send_email_with_attachments_fn_transportes(to_emails, subject, body, uploaded_files):
+    """
+    Envia um e-mail com anexos via Gmail SMTP.
+    Os e-mails são lidos dos segredos do Streamlit.
+    """
+    try:
+        # Pega as credenciais de e-mail dos segredos do Streamlit da nova seção [gmail_credentials]
+        remetente = st.secrets["gmail_credentials"]["gmail_email"]
+        senha_aplicativo = st.secrets["gmail_credentials"]["gmail_app_password"]
+
+        # Cria a mensagem principal (MIMEMultipart para permitir texto e anexos)
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = remetente
+        msg["To"] = ", ".join(to_emails) # Suporta múltiplos destinatários
+
+        msg.attach(MIMEText(body, "plain")) # Mude para "html" se o corpo for HTML
+
+        # Adiciona os anexos
+        for uploaded_file in uploaded_files:
+            try:
+                # Cria um objeto MIMEBase para o anexo
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(uploaded_file.read()) # Lê o conteúdo do arquivo em memória
+                
+                # Codifica o anexo em Base64
+                encoders.encode_base64(part)
+                
+                # Adiciona o cabeçalho Content-Disposition com o nome do arquivo
+                part.add_header(
+                    "Content-Disposition",
+                    f"attachment; filename= {uploaded_file.name}",
+                )
+                
+                # Anexa a parte do arquivo à mensagem
+                msg.attach(part)
+            except Exception as e:
+                st.warning(f"Erro ao anexar o arquivo '{uploaded_file.name}': {e}. O e-mail será enviado sem este anexo.")
+
+        # Envia o e-mail
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp: # 465 é a porta SSL
+            smtp.login(remetente, senha_aplicativo)
+            smtp.send_message(msg)
+        st.success("E-mail enviado com sucesso!")
+        return True
+    except KeyError as e:
+        st.error(f"Credenciais de e-mail não configuradas nos segredos do Streamlit. Verifique a seção [gmail_credentials] e as chaves 'gmail_email' e 'gmail_app_password'. Erro: {e}")
+        return False
+    except Exception as e:
+        st.error(f"Erro ao enviar o e-mail: {e}. Verifique se a 'senha de aplicativo' do Gmail está correta e se o acesso SMTP está liberado.")
+        return False
+
+
 # --- Funções de Ação ---
 
 def _save_frete_nacional_to_db():
@@ -102,8 +189,13 @@ def _save_frete_nacional_to_db():
         st.error("Não há dados da DI carregados para salvar o Frete Nacional.")
         return
 
-    di_id = st.session_state.fn_transportes_di_data[0] # O ID da DI é o primeiro elemento da tupla
+    # O ID da DI é acessado como uma chave do dicionário
+    di_id = st.session_state.fn_transportes_di_data.get('id')
     
+    if di_id is None:
+        st.error("ID da DI não encontrado nos dados carregados para salvar o Frete Nacional.")
+        return
+
     # O valor a ser salvo é o 'Total a Depositar' calculado
     frete_nacional_to_save_str = st.session_state.fn_transportes_total_a_depositar_display
     try:
@@ -123,26 +215,24 @@ def load_fn_transportes_di_data(declaracao_id):
     """
     Carrega os dados da DI para a tela FN Transportes e inicializa o estado da sessão.
     """
+    logger.info(f"load_fn_transportes_di_data: Chamado para DI ID: {declaracao_id}")
     if not declaracao_id:
         logger.warning("Nenhum ID de declaração fornecido para carregar dados (FN Transportes).")
         clear_fn_transportes_di_data()
         return
 
-    logger.info(f"Carregando dados para DI ID (FN Transportes): {declaracao_id}")
-    di_data_row = get_declaracao_by_id(declaracao_id)
+    di_data_dict = get_declaracao_by_id(declaracao_id) # Agora retorna um dicionário
 
-    if di_data_row:
-        # Converte sqlite3.Row para uma tupla ou lista para desempacotar
-        di_data = tuple(di_data_row)
-        st.session_state.fn_transportes_di_data = di_data
+    if di_data_dict:
+        st.session_state.fn_transportes_di_data = di_data_dict # Armazena o dicionário diretamente
         
-        # Desempacota os dados para acessar informacao_complementar e outros campos
-        (id_db, numero_di, data_registro_db, valor_total_reais_xml,
-         arquivo_origem, data_importacao, informacao_complementar,
-         vmle, frete, seguro, vmld, ipi, pis_pasep, cofins, icms_sc,
-         taxa_cambial_usd, taxa_siscomex, numero_invoice, peso_bruto, peso_liquido,
-         cnpj_importador, importador_nome, recinto, embalagem, quantidade_volumes, acrescimo,
-         imposto_importacao, armazenagem_db_value, frete_nacional_db_value) = di_data
+        # Acessa os dados usando .get() para robustez e legibilidade
+        # Forneça um valor padrão (0.0 ou "N/A") caso a chave não exista, para evitar erros.
+        informacao_complementar = di_data_dict.get('informacao_complementar')
+        vmld = di_data_dict.get('vmld', 0.0)
+        peso_bruto = di_data_dict.get('peso_bruto', 0.0)
+        peso_liquido = di_data_dict.get('peso_liquido', 0.0)
+        frete_nacional_db_value = di_data_dict.get('frete_nacional', 0.0) # Assume que a chave é 'frete_nacional'
 
         st.session_state.fn_transportes_processo_ref = informacao_complementar if informacao_complementar else "N/A"
         
@@ -152,17 +242,51 @@ def load_fn_transportes_di_data(declaracao_id):
         st.session_state.fn_transportes_peso_liquido_raw = peso_liquido
         st.session_state.fn_transportes_frete_nacional_db_raw = frete_nacional_db_value # Guarda o valor do DB
 
-        # Ensure these are initialized if they don't exist, but don't force overwrite if widgets are already rendered.
-        if 'fn_transportes_qtde_processos_input' not in st.session_state:
-            st.session_state.fn_transportes_qtde_processos_input = "1"
-        if 'fn_transportes_qtde_container_input' not in st.session_state:
-            st.session_state.fn_transportes_qtde_container_input = "1"
+        # --- Lógica para obter valores de Quantidade de Processos Agrupados e Quantidade Containers ---
+        processo_data = st.session_state.get('processo_data') # Pega o processo_data já carregado na sessão
+        
+        default_qtde_processos_from_details = 1
+        default_qtde_container_from_details = 1
+
+        if processo_data:
+            consolidado_status = str(processo_data.get('Consolidado', 'Não')).strip().lower()
+            
+            # Lógica para Quantidade de Processos Agrupados
+            if consolidado_status == 'sim':
+                processos_vinculados_raw = processo_data.get('Processos_Vinculados')
+                if isinstance(processos_vinculados_raw, list):
+                    default_qtde_processos_from_details = len(processos_vinculados_raw) + 1
+                else:
+                    default_qtde_processos_from_details = 1
+            else:
+                default_qtde_processos_from_details = 1
+
+            # Lógica para Quantidade de Contêineres
+            if consolidado_status == 'sim':
+                default_qtde_container_from_details = 1
+            else:
+                qtde_containers_from_process = processo_data.get('Quantidade_Containers')
+                try:
+                    default_qtde_container_from_details = int(qtde_containers_from_process) if pd.notna(qtde_containers_from_process) else 1
+                except (ValueError, TypeError):
+                    default_qtde_container_from_details = 1
+        
+        # ATENÇÃO: Os inputs de texto (`st.text_input`) só aceitam strings para o parâmetro `value`.
+        # Converte os valores para string.
+        st.session_state.fn_transportes_qtde_processos_input = str(default_qtde_processos_from_details)
+        st.session_state.fn_transportes_qtde_container_input = str(default_qtde_container_from_details)
+        # Pré-preenche Qtde Baixa Vazio com Qtde de Contêiner
+        st.session_state.fn_transportes_qtde_baixa_vazio_input = str(default_qtde_container_from_details)
+        # --- Fim da lógica de obtenção e atribuição ---
+
+
         if 'fn_transportes_diferenca_input' not in st.session_state:
             st.session_state.fn_transportes_diferenca_input = _format_currency(0.00)
         if 'fn_transportes_baixa_vazio_option' not in st.session_state:
             st.session_state.fn_transportes_baixa_vazio_option = "Não"
-        if 'fn_transportes_qtde_baixa_vazio_input' not in st.session_state:
-            st.session_state.fn_transportes_qtde_baixa_vazio_input = "0"
+        # A linha abaixo foi movida para dentro da lógica acima para usar default_qtde_container_from_details
+        # if 'fn_transportes_qtde_baixa_vazio_input' not in st.session_state:
+        #     st.session_state.fn_transportes_qtde_baixa_vazio_input = "0"
 
         perform_fn_transportes_calculations() # Realiza os cálculos iniciais
 
@@ -176,30 +300,12 @@ def clear_fn_transportes_di_data():
     st.session_state.fn_transportes_processo_ref = "PCH-XXXX-XX"
     
     # Initialize these with default values if they don't exist, or set them to defaults
-    if 'fn_transportes_qtde_processos_input' not in st.session_state:
-        st.session_state.fn_transportes_qtde_processos_input = "1"
-    else:
-        st.session_state.fn_transportes_qtde_processos_input = "1"
-
-    if 'fn_transportes_qtde_container_input' not in st.session_state:
-        st.session_state.fn_transportes_qtde_container_input = "1"
-    else:
-        st.session_state.fn_transportes_qtde_container_input = "1"
-
-    if 'fn_transportes_diferenca_input' not in st.session_state:
-        st.session_state.fn_transportes_diferenca_input = _format_currency(0.00)
-    else:
-        st.session_state.fn_transportes_diferenca_input = _format_currency(0.00)
-
-    if 'fn_transportes_baixa_vazio_option' not in st.session_state:
-        st.session_state.fn_transportes_baixa_vazio_option = "Não"
-    else:
-        st.session_state.fn_transportes_baixa_vazio_option = "Não"
-
-    if 'fn_transportes_qtde_baixa_vazio_input' not in st.session_state:
-        st.session_state.fn_transportes_qtde_baixa_vazio_input = "0"
-    else:
-        st.session_state.fn_transportes_qtde_baixa_vazio_input = "0"
+    st.session_state.fn_transportes_qtde_processos_input = "1"
+    st.session_state.fn_transportes_qtde_container_input = "1"
+    st.session_state.fn_transportes_diferenca_input = _format_currency(0.00)
+    st.session_state.fn_transportes_baixa_vazio_option = "Não"
+    st.session_state.fn_transportes_qtde_baixa_vazio_input = "1" # Define como 1 por padrão ao limpar
+    st.session_state.fn_transportes_data_vencimento = date.today() # Define a data de hoje ao limpar
 
     st.session_state.show_fn_email_expander = False
     st.session_state.fn_email_type_to_show = None
@@ -215,6 +321,12 @@ def clear_fn_transportes_di_data():
     st.session_state.fn_transportes_percentual_vmld_display = _format_currency(0.00)
     st.session_state.fn_transportes_total_parcial_display = _format_currency(0.00)
     st.session_state.fn_transportes_total_a_depositar_display = _format_currency(0.00)
+
+    # Limpa os campos de e-mail
+    st.session_state.fn_transportes_email_to = "jjenessa23@gmail.com"
+    st.session_state.fn_transportes_email_subject_send = ""
+    st.session_state.fn_transportes_email_body_send = ""
+    st.session_state.fn_transportes_email_attachments_list = []
 
 
 def perform_fn_transportes_calculations():
@@ -323,6 +435,103 @@ def _decrement_diferenca():
     st.session_state.fn_transportes_diferenca_input = _format_currency(round(current_diff - 0.01, 2))
     perform_fn_transportes_calculations()
 
+def send_email_and_save_action_fn_transportes():
+    """
+    Combina a lógica de preparar, exibir, enviar e-mail e salvar no banco de dados para FN Transportes.
+    """
+    if 'fn_transportes_di_data' not in st.session_state or not st.session_state.fn_transportes_di_data:
+        st.warning("Carregue os dados da DI antes de enviar o e-mail.")
+        return
+
+    # Preenche os campos do formulário de envio de e-mail ao carregar a DI ou recalcular
+    email_subject_generated, email_body_plaintext_generated = generate_fn_email_content()
+    # Atualiza st.session_state diretamente para que os widgets reflitam os valores gerados
+    st.session_state.fn_transportes_email_subject_send = email_subject_generated # REMOVIDO 'if not'
+    st.session_state.fn_transportes_email_body_send = email_body_plaintext_generated # REMOVIDO 'if not'
+    
+    # CAMPOS DE ENTRADA DO E-MAIL
+    to_emails_input = st.text_input(
+        "Para (e-mails separados por vírgula):",
+        value=st.session_state.fn_transportes_email_to,
+        key="fn_transportes_send_to_emails_input"
+    )
+    st.session_state.fn_transportes_email_to = to_emails_input.strip()
+
+    st.session_state.fn_transportes_email_subject_send = st.text_input(
+        "Assunto:",
+        value=st.session_state.fn_transportes_email_subject_send,
+        key="fn_transportes_send_email_subject_input"
+    )
+    
+    st.session_state.fn_transportes_email_body_send = st.text_area(
+        "Corpo do E-mail:",
+        value=st.session_state.fn_transportes_email_body_send,
+        height=300, # Aumentei a altura para melhor visualização
+        key="fn_transportes_send_email_body_input"
+    )
+    
+    uploaded_files = st.file_uploader(
+        "Arraste e solte ou selecione arquivos para anexar (múltiplos)",
+        type=None, # Permite todos os tipos de arquivo
+        accept_multiple_files=True,
+        key="fn_transportes_send_email_attachments_uploader"
+    )
+    # Garante que st.session_state.fn_transportes_email_attachments_list é uma lista mutável
+    if 'fn_transportes_email_attachments_list' not in st.session_state:
+        st.session_state.fn_transportes_email_attachments_list = []
+
+    # Atualiza a lista de anexos se novos arquivos foram carregados
+    if uploaded_files:
+        current_attached_names = {f.name for f in st.session_state.fn_transportes_email_attachments_list}
+        for file in uploaded_files:
+            if file.name not in current_attached_names:
+                st.session_state.fn_transportes_email_attachments_list.append(file)
+    
+    # Exibe os arquivos atualmente anexados (e permite remover)
+    if st.session_state.fn_transportes_email_attachments_list:
+        st.markdown("###### Arquivos anexados:")
+        for i, file in enumerate(st.session_state.fn_transportes_email_attachments_list):
+            col_file_name, col_remove_btn = st.columns([0.8, 0.2])
+            with col_file_name:
+                st.write(f"- {file.name}")
+            with col_remove_btn:
+                if st.button("Remover", key=f"fn_transportes_remove_attachment_{i}"):
+                    st.session_state.fn_transportes_email_attachments_list.pop(i)
+                    st.rerun() # Força o Streamlit a rerenderizar para atualizar a lista
+
+    col1, col2 = st.columns([0.5, 0.2]) # Colunas para o botão de enviar/salvar e talvez um espaço
+    with col1:
+        if st.button("Enviar E-mail e Salvar", key="fn_transportes_send_email_and_save_btn", use_container_width=True):
+            if not st.session_state.fn_transportes_email_to:
+                st.warning("Por favor, preencha o(s) destinatário(s) do e-mail.")
+            else:
+                list_of_recipients = [email.strip() for email in st.session_state.fn_transportes_email_to.split(',') if email.strip()]
+                
+                if list_of_recipients:
+                    with st.spinner("Enviando e-mail e salvando no banco de dados..."):
+                        # 1. Tenta enviar o e-mail
+                        email_sent_successfully = send_email_with_attachments_fn_transportes(
+                            to_emails=list_of_recipients,
+                            subject=st.session_state.fn_transportes_email_subject_send,
+                            body=st.session_state.fn_transportes_email_body_send,
+                            uploaded_files=st.session_state.fn_transportes_email_attachments_list # Usa a lista de arquivos anexados
+                        )
+                        
+                        # 2. Se o e-mail foi enviado com sucesso, salva no banco de dados
+                        if email_sent_successfully:
+                            _save_frete_nacional_to_db()
+                            # REMOVIDO: load_fn_transportes_di_data(st.session_state.fn_transportes_di_data.get('id'))
+                            
+                            # Limpa os campos após o envio bem-sucedido
+                            st.session_state.fn_transportes_email_to = "jjenessa23@gmail.com"
+                            st.session_state.fn_transportes_email_subject_send = ""
+                            st.session_state.fn_transportes_email_body_send = ""
+                            st.session_state.fn_transportes_email_attachments_list = [] # Limpa a lista de anexos
+
+                    st.rerun() # Força rerender para limpar os campos ou mostrar status
+                else:
+                    st.warning("Nenhum destinatário válido encontrado.")
+
 
 def show_calculo_fn_transportes_page():
     """
@@ -341,51 +550,56 @@ def show_calculo_fn_transportes_page():
     st.subheader("Cálculo Frete Nacional (FN Transportes)")
 
     # Inicializa variáveis de estado para a página se elas não existirem
-    # This is the primary place to initialize session state variables for widgets
-    if 'fn_transportes_di_data' not in st.session_state:
-        st.session_state.fn_transportes_di_data = None
-    if 'fn_transportes_processo_ref' not in st.session_state:
-        st.session_state.fn_transportes_processo_ref = "PCH-XXXX-XX"
-    if 'fn_transportes_qtde_processos_input' not in st.session_state:
-        st.session_state.fn_transportes_qtde_processos_input = "1"
-    if 'fn_transportes_qtde_container_input' not in st.session_state:
-        st.session_state.fn_transportes_qtde_container_input = "1"
-    if 'fn_transportes_diferenca_input' not in st.session_state:
-        st.session_state.fn_transportes_diferenca_input = _format_currency(0.00)
-    if 'fn_transportes_baixa_vazio_option' not in st.session_state:
-        st.session_state.fn_transportes_baixa_vazio_option = "Não"
-    if 'fn_transportes_qtde_baixa_vazio_input' not in st.session_state:
-        st.session_state.fn_transportes_qtde_baixa_vazio_input = "0"
-    if 'show_fn_email_expander' not in st.session_state:
-        st.session_state.show_fn_email_expander = False
-    if 'fn_email_type_to_show' not in st.session_state:
-        st.session_state.fn_email_type_to_show = None
-    if 'fn_transportes_vmld_raw' not in st.session_state:
-        st.session_state.fn_transportes_vmld_raw = 0.0
-    if 'fn_transportes_peso_bruto_raw' not in st.session_state:
-        st.session_state.fn_transportes_peso_bruto_raw = 0.0
-    if 'fn_transportes_peso_liquido_raw' not in st.session_state:
-        st.session_state.fn_transportes_peso_liquido_raw = 0.0
-    if 'fn_transportes_frete_nacional_db_raw' not in st.session_state:
-        st.session_state.fn_transportes_frete_nacional_db_raw = 0.0
-    if 'fn_transportes_vmld_di_display' not in st.session_state:
-        st.session_state.fn_transportes_vmld_di_display = _format_currency(0.00)
-    if 'fn_transportes_base_calculo_display' not in st.session_state:
-        st.session_state.fn_transportes_base_calculo_display = _format_currency(0.00)
-    if 'fn_transportes_percentual_vmld_display' not in st.session_state:
-        st.session_state.fn_transportes_percentual_vmld_display = _format_currency(0.00)
-    if 'fn_transportes_total_parcial_display' not in st.session_state:
-        st.session_state.fn_transportes_total_parcial_display = _format_currency(0.00)
-    if 'fn_transportes_total_a_depositar_display' not in st.session_state:
-        st.session_state.fn_transportes_total_a_depositar_display = _format_currency(0.00)
+    # Esta é a principal área para inicializar variáveis de estado da sessão para widgets
+    st.session_state.setdefault('fn_transportes_di_data', None)
+    st.session_state.setdefault('fn_transportes_processo_ref', "PCH-XXXX-XX")
+    # Inicializa com valores padrão. Estes serão sobrescritos por load_fn_transportes_di_data
+    # se houver dados de processo disponíveis.
+    st.session_state.setdefault('fn_transportes_qtde_processos_input', "1")
+    st.session_state.setdefault('fn_transportes_qtde_container_input', "1")
+    st.session_state.setdefault('fn_transportes_diferenca_input', _format_currency(0.00))
+    st.session_state.setdefault('fn_transportes_baixa_vazio_option', "Não")
+    st.session_state.setdefault('fn_transportes_qtde_baixa_vazio_input', "1") # Inicializa com 1, será sobrescrito se houver dados
+    st.session_state.setdefault('fn_transportes_data_vencimento', date.today()) # NOVO: Inicializa com a data de hoje
+    st.session_state.setdefault('show_fn_email_expander', False)
+    st.session_state.setdefault('fn_email_type_to_show', None)
+    st.session_state.setdefault('fn_transportes_vmld_raw', 0.0)
+    st.session_state.setdefault('fn_transportes_peso_bruto_raw', 0.0)
+    st.session_state.setdefault('fn_transportes_peso_liquido_raw', 0.0)
+    st.session_state.setdefault('fn_transportes_frete_nacional_db_raw', 0.0)
+    st.session_state.setdefault('fn_transportes_vmld_di_display', _format_currency(0.00))
+    st.session_state.setdefault('fn_transportes_base_calculo_display', _format_currency(0.00))
+    st.session_state.setdefault('fn_transportes_percentual_vmld_display', _format_currency(0.00))
+    st.session_state.setdefault('fn_transportes_total_parcial_display', _format_currency(0.00))
+    st.session_state.setdefault('fn_transportes_total_a_depositar_display', _format_currency(0.00))
+    # Inicializa os estados para os campos de e-mail a serem enviados
+    st.session_state.setdefault('fn_transportes_email_to', "jjenessa23@gmail.com")  # Valor padrão
+    st.session_state.setdefault('fn_transportes_email_subject_send', "")
+    st.session_state.setdefault('fn_transportes_email_body_send', "")
+    st.session_state.setdefault('fn_transportes_email_attachments_list', []) # Lista para gerenciar anexos
 
 
     # Carrega os dados da DI se um ID foi passado da página anterior
+    # A lógica aqui é crucial para disparar o carregamento dos dados do processo.
     if 'selected_di_id_fn_transportes' in st.session_state and st.session_state.selected_di_id_fn_transportes:
-        load_fn_transportes_di_data(st.session_state.selected_di_id_fn_transportes)
-        st.session_state.selected_di_id_fn_transportes = None # Limpa o ID após carregar
+        # Só carrega se o ID da DI mudou ou se os dados ainda não foram carregados
+        if st.session_state.fn_transportes_di_data is None or \
+           st.session_state.fn_transportes_di_data.get('id') != st.session_state.selected_di_id_fn_transportes:
+            load_fn_transportes_di_data(st.session_state.selected_di_id_fn_transportes)
+            st.session_state.selected_di_id_fn_transportes = None # Limpa o ID após carregar
+            # Força um rerun para que os st.text_input peguem os valores atualizados do session_state
+            st.rerun() 
 
-    st.markdown(f"#### Processo: **{st.session_state.fn_transportes_processo_ref}**")
+    col_1, col_2 = st.columns([0.7, 0.3]) # Colunas para o conteúdo principal e ações
+    with col_1:
+        st.markdown(f"#### Processo: **{st.session_state.fn_transportes_processo_ref}**")
+    with col_2:  
+        #adicionando imagem de logo da paclog elo
+        logo_fn_transportes = os.path.join(app_root_dir, 'assets', 'fn_transportes.png')
+        if os.path.exists(logo_fn_transportes):
+            st.image(logo_fn_transportes, width=150, caption="FN Transportes")
+        else:
+            st.warning("Logo da Fn transportes não encontrada. Verifique o caminho do arquivo.")
     st.markdown("---")
 
     # --- Tabela de Cálculos ---
@@ -399,7 +613,7 @@ def show_calculo_fn_transportes_page():
             st.markdown(f"**Qtde de Processos:**")
             st.text_input(
                 "Qtde de Processos",
-                value=st.session_state.fn_transportes_qtde_processos_input,
+                value=st.session_state.fn_transportes_qtde_processos_input, # Usa o valor do session_state
                 key="fn_transportes_qtde_processos_input",
                 on_change=perform_fn_transportes_calculations, # Recalcula ao alterar
                 label_visibility="collapsed"
@@ -415,7 +629,7 @@ def show_calculo_fn_transportes_page():
             st.markdown(f"**Qtde de Contêiner:**")
             st.text_input(
                 "Qtde de Contêiner",
-                value=st.session_state.fn_transportes_qtde_container_input,
+                value=st.session_state.fn_transportes_qtde_container_input, # Usa o valor do session_state
                 key="fn_transportes_qtde_container_input",
                 on_change=perform_fn_transportes_calculations, # Recalcula ao alterar
                 label_visibility="collapsed"
@@ -568,38 +782,21 @@ def show_calculo_fn_transportes_page():
             st.button("-0.01", key="fn_diferenca_minus", on_click=_decrement_diferenca)
             st.write('</div>', unsafe_allow_html=True)
 
+    # NOVO: Campo para definir a data de vencimento
+    st.markdown("---")
+    st.markdown("##### Data de Vencimento")
+    st.date_input(
+        "Selecione a Data de Vencimento:",
+        value=st.session_state.fn_transportes_data_vencimento,
+        key="fn_transportes_data_vencimento",
+        on_change=perform_fn_transportes_calculations, # Recalcula o e-mail ao alterar
+        format="DD/MM/YYYY"
+    )
+
     st.markdown("---")
 
-    col_1 = st.columns(5)
-
-    with col_1[0]:
-        if st.button("Gerar E-mail FN Transportes", key="fn_generate_email_btn", use_container_width=True):
-            st.session_state.show_fn_email_expander = True
-            st.rerun()
-
-    with col_1[1]:
-        if st.button("Salvar Frete Nacional no DB", key="fn_save_frete_nacional_btn", use_container_width=True):
-            _save_frete_nacional_to_db()
-            # Opcional: Recarregar dados da DI para exibir o valor atualizado
-            if st.session_state.fn_transportes_di_data:
-                load_fn_transportes_di_data(st.session_state.fn_transportes_di_data[0])
-                           
-
-    
-
-    # Expander para exibir o conteúdo do e-mail
-    if st.session_state.get('show_fn_email_expander', False):
-        email_subject, email_body_plaintext = generate_fn_email_content()
-
-        with st.expander(f"Conteúdo do E-mail: FN Transportes", expanded=True):
-            st.text_area("Assunto do E-mail", value=email_subject, height=68, disabled=False, key="fn_exp_email_subject")
-            st.text_area("Corpo do E-mail", value=email_body_plaintext, height=300, disabled=False, key="fn_exp_email_body")
-
-            st.info("Copie o conteúdo acima e cole no seu cliente de e-mail. Lembre-se de aplicar a formatação manualmente, se desejar.")
-            
-            if st.button("Fechar E-mail", key="fn_close_email_expander_btn"):
-                st.session_state.show_fn_email_expander = False
-                st.rerun()
+    st.markdown("#### Enviar E-mail e Salvar no Banco de Dados")
+    send_email_and_save_action_fn_transportes() # Chamada da nova função que gerencia a seção de e-mail e salvamento
 
     st.markdown("---")
     if st.button("Voltar para Detalhes da DI", key="fn_voltar_di"):
@@ -607,3 +804,4 @@ def show_calculo_fn_transportes_page():
         st.rerun()
         
     st.markdown("---")
+

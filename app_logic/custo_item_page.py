@@ -6,19 +6,32 @@ import re
 import io # Para manipulação de arquivos em memória
 import openpyxl # Para gerar e ler arquivos Excel
 from openpyxl.styles import Font, Alignment, Border, Side
-from reportlab.lib.pagesizes import letter, A4, landscape # Importar landscape
+
+# Importações específicas do ReportLab para evitar NameError e Warnings
+from reportlab.lib.pagesizes import letter, A4, landscape
 from reportlab.lib.units import inch, mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, Frame, PageTemplate, NextPageTemplate # Importar Frame, PageTemplate, e NextPageTemplate
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, Frame, PageTemplate, NextPageTemplate
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.lib.utils import ImageReader
+
 import logging
-import sqlite3 # Importar sqlite3 para verificar tipo de dado
-from app_logic.utils import set_background_image, set_sidebar_background_image
+# import sqlite3 # REMOVIDO: sqlite3 não é mais usado diretamente ou é mockado em db_utils
+
+# Importa set_background_image diretamente para uso sem prefixo
+from app_logic.utils import set_background_image, set_sidebar_background_image 
 
 # Importar funções do novo módulo de utilitários de banco de dados
-from db_utils import get_declaracao_by_referencia, get_itens_by_declaracao_id, update_xml_item_erp_code, get_process_cost_data, save_process_cost_data
+from db_utils import (
+    get_declaracao_by_referencia,
+    get_itens_by_declaracao_id,
+    update_xml_item_erp_code,
+    get_process_cost_data,
+    save_process_cost_data,
+    get_frete_internacional_by_referencia # Importa para obter o frete internacional
+)
+from db_utils import _clean_reference_string # Importa a função de limpeza de string
 
 logger = logging.getLogger(__name__)
 
@@ -116,28 +129,53 @@ def _clean_quantity(x):
         return 0.0
 
 # --- Função de Cálculo Principal (Adaptada do seu código) ---
-def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
+def perform_calculations(di_data, itens_data, expense_inputs, contracts_df, frete_internacional_calculado_val):
     """Realiza todos os cálculos de custo do processo e itens."""
     if not di_data:
         return {}, {}, {}, pd.DataFrame(), 0.0, 0.0
 
-    # Desempacota os dados da DI
-    (id_db, numero_di, data_registro_db, valor_total_reais_xml,
-     arquivo_origem, data_importacao, informacao_complementar,
-     vmle_declaracao, frete_declaracao, seguro_declaracao, vmld_declaracao,
-     ipi_total_declaracao, pis_pasep_total_declaracao, cofins_total_declaracao, icms_sc,
-     taxa_cambial_usd_declaracao, taxa_siscomex_total_declaracao, numero_invoice,
-     peso_bruto_total, peso_liquido_total, cnpj_importador, importador_nome,
-     recinto, embalagem, quantidade_volumes_total, acrescimo_total_declaracao,
-     imposto_importacao_total_declaracao, armazenagem_db, frete_nacional_db) = di_data
+    # Desempacota os dados da DI (AGORA ACESSANDO COMO DICIONÁRIO)
+    # Certifique-se de que di_data é um dicionário aqui.
+    # get_declaracao_by_referencia e get_declaracao_by_id no db_utils agora retornam dicionários.
+    id_db = di_data.get('id')
+    numero_di = di_data.get('numero_di')
+    data_registro_db = di_data.get('data_registro')
+    valor_total_reais_xml = di_data.get('valor_total_reais_xml', 0.0)
+    arquivo_origem = di_data.get('arquivo_origem')
+    data_importacao = di_data.get('data_importacao')
+    informacao_complementar = di_data.get('informacao_complementar')
+    vmle_declaracao = di_data.get('vmle', 0.0)
+    frete_declaracao = di_data.get('frete', 0.0)
+    seguro_declaracao = di_data.get('seguro', 0.0)
+    vmld_declaracao = di_data.get('vmld', 0.0)
+    ipi_total_declaracao = di_data.get('ipi', 0.0)
+    pis_pasep_total_declaracao = di_data.get('pis_pasep', 0.0)
+    cofins_total_declaracao = di_data.get('cofins', 0.0)
+    icms_sc = di_data.get('icms_sc')
+    taxa_cambial_usd_declaracao = di_data.get('taxa_cambial_usd', 0.0)
+    taxa_siscomex_total_declaracao = di_data.get('taxa_siscomex', 0.0)
+    numero_invoice = di_data.get('numero_invoice')
+    peso_bruto_total = di_data.get('peso_bruto', 0.0)
+    peso_liquido_total = di_data.get('peso_liquido', 0.0)
+    cnpj_importador = di_data.get('cnpj_importador')
+    importador_nome = di_data.get('importador_nome')
+    recinto = di_data.get('recinto')
+    embalagem = di_data.get('embalagem')
+    quantidade_volumes_total = di_data.get('quantidade_volumes', 0)
+    acrescimo_total_declaracao = di_data.get('acrescimo', 0.0)
+    imposto_importacao_total_declaracao = di_data.get('imposto_importacao', 0.0)
+    armazenagem_db = di_data.get('armazenagem', 0.0)
+    frete_nacional_db = di_data.get('frete_nacional', 0.0)
 
     # Obter valores dos campos editáveis de despesas
-    afrmm_input = expense_inputs['afrmm']
-    siscoserv_input = expense_inputs['siscoserv']
-    descarregamento_input = expense_inputs['descarregamento']
-    taxas_destino_input = expense_inputs['taxas_destino']
-    multa_input = expense_inputs['multa']
+    afrmm_input = expense_inputs.get('afrmm', 0.0)
+    siscoserv_input = expense_inputs.get('siscoserv', 0.0)
+    descarregamento_input = expense_inputs.get('descarregamento', 0.0)
+    multa_input = expense_inputs.get('multa', 0.0)
 
+    # NOVO CÁLCULO PARA TAXAS DESTINO
+    taxas_destino_calculado = frete_internacional_calculado_val - frete_declaracao
+    
     # Cálculo de Despesas Operacionais (Processo)
     envio_docs_fixo = 0.00
     honorario_despachante_fixo = 1000.00
@@ -146,7 +184,7 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
         afrmm_input + (armazenagem_db if armazenagem_db is not None else 0.0) + envio_docs_fixo +
         (frete_nacional_db if frete_nacional_db is not None else 0.0) + honorario_despachante_fixo +
         (taxa_siscomex_total_declaracao if taxa_siscomex_total_declaracao is not None else 0.0) + siscoserv_input +
-        descarregamento_input + taxas_destino_input + multa_input
+        descarregamento_input + taxas_destino_calculado + multa_input # Usa taxas_destino_calculado
     )
 
     # Cálculo dos Contratos de Câmbio
@@ -154,8 +192,8 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
     soma_contratos_usd = 0.0
     for index, row in contracts_df.iterrows():
         try:
-            dolar_val = row['Dólar']
-            valor_contrato_usd_input = row['Valor (US$)']
+            dolar_val = row.get('Dólar', 0.0)
+            valor_contrato_usd_input = row.get('Valor (US$)', 0.0)
 
             if dolar_val > 0 and valor_contrato_usd_input > 0:
                 soma_contratos_reais += (dolar_val * valor_contrato_usd_input)
@@ -208,7 +246,7 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
         "SISCOMEX": _format_currency(taxa_siscomex_total_declaracao),
         "SISCOSERV": _format_currency(siscoserv_input),
         "DESCARREGAMENTO": _format_currency(descarregamento_input),
-        "TAXAS DESTINO": _format_currency(taxas_destino_input),
+        "TAXAS DESTINO": _format_currency(taxas_destino_calculado), # Usa o valor calculado
         "MULTA": _format_currency(multa_input),
         "TOTAL": _format_currency(total_despesas_operacionais),
     }
@@ -231,19 +269,22 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
 
     # Cálculos e População da Tabela de Itens
     itens_df_data = []
-    total_peso_liquido_itens_di = sum(item[9] for item in itens_data if item[9] is not None)
-    total_valor_fob_brl_itens_di = sum(item[8] for item in itens_data if item[8] is not None)
+    # Garantir que os itens_data sejam dicionários para acesso por chave
+    # No db_utils.get_itens_by_declaracao_id, já retornamos dicionários, mas é bom garantir aqui
+    itens_data_dicts = [dict(item) for item in itens_data] # Removido isinstance(item, int)
+
+    total_peso_liquido_itens_di = sum(item.get('peso_liquido_item', 0.0) for item in itens_data_dicts)
+    total_valor_fob_brl_itens_di = sum(item.get('valor_item_calculado', 0.0) for item in itens_data_dicts)
+    
     total_quantidade_itens_di = 0
-    for item in itens_data:
-        if item[5] is not None:
-            try:
-                # Use _clean_quantity para obter o valor numérico correto
-                qty = _clean_quantity(item[5])
-                # Correção: dividir a quantidade por 10 conforme solicitado
-                qty = qty / 10.0
-                total_quantidade_itens_di += qty
-            except (ValueError, AttributeError):
-                continue
+    for item in itens_data_dicts:
+        qty_original = item.get('quantidade', 0.0)
+        try:
+            qty = _clean_quantity(qty_original)
+            qty = qty / 10.0 # Correção: dividir a quantidade por 10
+            total_quantidade_itens_di += qty
+        except (ValueError, AttributeError):
+            continue
 
     total_peso_liquido_itens_di = total_peso_liquido_itens_di if total_peso_liquido_itens_di > 0 else 1.0
     total_valor_fob_brl_itens_di = total_valor_fob_brl_itens_di if total_valor_fob_brl_itens_di > 0 else 1.0
@@ -253,16 +294,12 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
 
     # Calculate total VLME for all items (needed for "Seguro do item" calculation)
     total_vlme_brl_itens_di_calc = 0.0
-    for item_data in itens_data:
-        # Garante que item_data seja uma tupla/lista e não sqlite3.Row
-        if isinstance(item_data, sqlite3.Row):
-            item_data = tuple(item_data)
-        
-        qty_original = item_data[5] if item_data[5] is not None else 0
+    for item_data in itens_data_dicts:
+        qty_original = item_data.get('quantidade', 0.0)
         qty = _clean_quantity(qty_original) / 10.0 # Aplicar a divisão por 10 aqui também para cálculos
         
-        val_item_fob_brl = item_data[8] if item_data[8] is not None else 0.0
-        peso_liquido_item_from_db = item_data[9] if item_data[9] is not None else 0.0
+        val_item_fob_brl = item_data.get('valor_item_calculado', 0.0)
+        peso_liquido_item_from_db = item_data.get('peso_liquido_item', 0.0)
         acrescimo_rateado_item_brl_calc = (acrescimo_total_declaracao if acrescimo_total_declaracao is not None else 0.0) / total_peso_liquido_itens_di * peso_liquido_item_from_db if total_peso_liquido_itens_di > 0 else 0.0
         vlme_brl_item_calc = val_item_fob_brl + acrescimo_rateado_item_brl_calc
         total_vlme_brl_itens_di_calc += vlme_brl_item_calc
@@ -270,15 +307,28 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
 
     fatores_por_adicao = {}
 
-    for item_data in itens_data:
-        # Ensure item_data is a tuple/list, not sqlite3.Row
-        if isinstance(item_data, sqlite3.Row):
-            item_data = tuple(item_data)
+    for item_data in itens_data_dicts:
+        # Acessando por chave
+        item_id = item_data.get('id')
+        decl_id = item_data.get('declaracao_id')
+        num_adicao = item_data.get('numero_adicao')
+        num_item_seq = item_data.get('numero_item_sequencial')
+        desc_mercadoria = item_data.get('descricao_mercadoria')
+        qty_original = item_data.get('quantidade', 0.0)
+        unit_medida = item_data.get('unidade_medida')
+        val_unit_fob_usd = item_data.get('valor_unitario', 0.0)
+        val_item_fob_brl = item_data.get('valor_item_calculado', 0.0)
+        peso_liquido_item_from_db = item_data.get('peso_liquido_item', 0.0)
+        ncm_item = item_data.get('ncm_item')
+        sku_item = item_data.get('sku_item')
+        custo_unit_di_usd = item_data.get('custo_unit_di_usd', 0.0)
+        ii_perc_item = item_data.get('ii_percent_item', 0.0)
+        ipi_perc_item = item_data.get('ipi_percent_item', 0.0)
+        pis_perc_item = item_data.get('pis_percent_item', 0.0)
+        cofins_perc_item = item_data.get('cofins_percent_item', 0.0)
+        icms_perc_item = item_data.get('icms_percent_item', 0.0)
+        codigo_erp_do_db = item_data.get('codigo_erp_item')
 
-        (item_id, decl_id, num_adicao, num_item_seq, desc_mercadoria, qty_original, unit_medida, # Renomeado qty para qty_original
-         val_unit_fob_usd, val_item_fob_brl, peso_liquido_item_from_db, ncm_item, sku_item,
-         custo_unit_di_usd, ii_perc_item, ipi_perc_item, pis_perc_item, cofins_perc_item, icms_perc_item,
-         codigo_erp_do_db) = item_data
 
         # Use _clean_quantity para garantir que a quantidade seja um número correto
         qty = _clean_quantity(qty_original) if qty_original is not None else 0
@@ -298,6 +348,14 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
         vlmd_brl_item = vlme_brl_item + frete_rateado_item + seguro_rateado_item
         cif_item_total = vlmd_brl_item
         cif_unitario_item = cif_item_total / qty if qty > 0 else 0.0
+        
+        # Obter alíquotas do item (já estão em percentual direto, por exemplo, 0.16 para 16%)
+        # Elas já vêm do DB parseadas pelo db_utils como floats
+        # ii_perc_item_safe = item_data.get('ii_percent_item', 0.0)
+        # ipi_perc_item_safe = item_data.get('ipi_percent_item', 0.0)
+        # pis_perc_item_safe = item_data.get('pis_percent_item', 0.0)
+        # cofins_perc_item_safe = item_data.get('cofins_percent_item', 0.0)
+        # icms_perc_item_safe = item_data.get('icms_percent_item', 0.0)
 
         ii_perc_item_safe = ii_perc_item if ii_perc_item is not None else 0.0
         ipi_perc_item_safe = ipi_perc_item if ipi_perc_item is not None else 0.0
@@ -369,19 +427,77 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
 
     itens_df = pd.DataFrame(itens_df_data)
 
-    # Calcular Fator por Adição e Fator Geral
-    adicao_fator_medio = {}
-    for adicao, fatores in fatores_por_adicao.items():
-        if fatores:
-            adicao_fator_medio[adicao] = sum(fatores) / len(fatores)
-        else:
-            adicao_fator_medio[adicao] = 0.0
+    # If itens_df is empty, create it with expected columns to avoid KeyError when creating total_row_data
+    if itens_df.empty:
+        # Define all expected columns for a fully structured empty DataFrame
+        # This list must match all possible keys added to itens_df_data
+        expected_columns = [
+            "ID", "Código ERP", "NCM", "SKU", "Descrição", "Quantidade", "Peso Unitário", 
+            "CIF Unitário", "VLME (BRL)", "VLMD (BRL)", "II (BRL)", "IPI (BRL)", "PIS (BRL)", 
+            "COFINS (BRL)", "II %", "IPI %", "PIS %", "COFINS %", "ICMS %", "Frete R$", 
+            "Seguro R$", "Unitário US$ DI", "Despesas Rateada", "Total de Despesas", 
+            "Total Unitário", "Variação Cambial", "Total Unitário com Variação", 
+            "Fator de Internação", "Fator por Adição"
+        ]
+        itens_df = pd.DataFrame(columns=expected_columns)
 
-    # Atualizar a coluna "Fator por Adição" no DataFrame
-    for index, row in itens_df.iterrows():
-        # Para o mock, vamos simplesmente aplicar o fator médio geral:
-        if adicao_fator_medio:
-            itens_df.loc[index, "Fator por Adição"] = _format_float(sum(adicao_fator_medio.values()) / len(adicao_fator_medio), 4)
+
+    # Adicionar linha de total ao DataFrame de itens
+    total_row_data = {col: "" for col in itens_df.columns} # Now itens_df.columns will always have keys
+    total_row_data["Código ERP"] = "TOTAL"
+
+    # Safely get sum for 'Quantidade'
+    if "Quantidade" in itens_df.columns and not itens_df["Quantidade"].empty:
+        # Ensure conversion to numeric before sum. _clean_quantity returns float.
+        total_row_data["Quantidade"] = _format_int(itens_df["Quantidade"].apply(_clean_quantity).sum())
+    else:
+        total_row_data["Quantidade"] = "0" # Default value if column is missing or empty
+
+    # For other columns that are summed:
+    cols_to_sum_currency = ["CIF Unitário", "VLME (BRL)", "VLMD (BRL)", "II (BRL)", "IPI (BRL)", "PIS (BRL)", "COFINS (BRL)",
+                            "Frete R$", "Seguro R$", "Despesas Rateada", "Total de Despesas", "Total Unitário", "Variação Cambial", "Total Unitário com Variação"]
+    for col in cols_to_sum_currency:
+        if col in itens_df.columns and not itens_df[col].empty:
+            # Remove "R$ ", "US$ ", ".", e substitui "," por "." antes de somar
+            cleaned_values = itens_df[col].apply(lambda x: float(str(x).replace('R$', '').replace('US$', '').replace('.', '').replace(',', '.').strip()))
+            total_row_data[col] = _format_currency(cleaned_values.sum())
+        else:
+            total_row_data[col] = _format_currency(0.0) # Default to 0.0 if column missing or empty
+
+    # For 'Unitário US$ DI'
+    if "Unitário US$ DI" in itens_df.columns and not itens_df["Unitário US$ DI"].empty:
+        cleaned_values_usd = itens_df["Unitário US$ DI"].apply(lambda x: float(str(x).replace('US$', '').replace('.', '').replace(',', '.').strip()))
+        total_row_data["Unitário US$ DI"] = _format_float(cleaned_values_usd.sum(), 2, prefix="US$ ")
+    else:
+        total_row_data["Unitário US$ DI"] = _format_float(0.0, 2, prefix="US$ ")
+
+    # For Fator de Internação and Fator por Adição
+    overall_fator_internacao = 0.0
+    overall_fator_por_adicao = 0.0
+
+    if "Fator de Internação" in itens_df.columns and not itens_df["Fator de Internação"].empty:
+        try:
+            # Safely convert to numeric, coercing errors to NaN, then drop NaN for mean
+            numeric_factors = itens_df["Fator de Internação"].apply(lambda x: float(str(x).replace('.', '').replace(',', '.'))).dropna()
+            if not numeric_factors.empty:
+                overall_fator_internacao = numeric_factors.mean()
+        except Exception as e:
+            logger.error(f"Error calculating mean for Fator de Internação: {e}")
+
+    if "Fator por Adição" in itens_df.columns and not itens_df["Fator por Adição"].empty:
+        try:
+            # Safely convert to numeric, coercing errors to NaN, then drop NaN for mean
+            numeric_factors_add = itens_df["Fator por Adição"].apply(lambda x: float(str(x).replace('.', '').replace(',', '.'))).dropna()
+            if not numeric_factors_add.empty:
+                overall_fator_por_adicao = numeric_factors_add.mean()
+        except Exception as e:
+            logger.error(f"Error calculating mean for Fator por Adição: {e}")
+
+    total_row_data["Fator de Internação"] = _format_float(overall_fator_internacao, 4)
+    total_row_data["Fator por Adição"] = _format_float(overall_fator_por_adicao, 4)
+
+    # After populating total_row_data, it needs to be appended.
+    itens_df = pd.concat([itens_df, pd.DataFrame([total_row_data])], ignore_index=True)
 
 
     total_impostos_processo = (imposto_importacao_total_declaracao if imposto_importacao_total_declaracao is not None else 0.0) + \
@@ -402,29 +518,6 @@ def perform_calculations(di_data, itens_data, expense_inputs, contracts_df):
     fator_geral_total = fator_geral_numerador / fator_geral_denominador
     process_totals["Fator Geral"] = _format_float(fator_geral_total, 4)
 
-    # Adicionar linha de total ao DataFrame de itens
-    total_row_data = {col: "" for col in itens_df.columns}
-    total_row_data["Código ERP"] = "TOTAL"
-    total_row_data["Quantidade"] = _format_int(itens_df["Quantidade"].apply(_clean_quantity).sum()) # Usando _format_int
-    total_row_data["Peso Unitário"] = _format_weight_no_kg(
-        itens_df["Peso Unitário"].apply(_clean_number).sum()
-    )
-    # Para colunas formatadas como "R$ X,XX" ou "US$ X,XX", precisamos remover o prefixo e converter para float antes de somar
-    cols_to_sum_currency = ["CIF Unitário", "VLME (BRL)", "VLMD (BRL)", "II (BRL)", "IPI (BRL)", "PIS (BRL)", "COFINS (BRL)",
-                            "Frete R$", "Seguro R$", "Despesas Rateada", "Total de Despesas", "Total Unitário", "Variação Cambial", "Total Unitário com Variação"]
-    for col in cols_to_sum_currency:
-        total_row_data[col] = _format_currency(itens_df[col].apply(lambda x: float(str(x).replace('R$', '').replace('US$', '').replace('.', '').replace(',', '.').strip())).sum())
-
-    total_row_data["Unitário US$ DI"] = _format_float(itens_df["Unitário US$ DI"].apply(lambda x: float(str(x).replace('US$', '').replace('.', '').replace(',', '.').strip())).sum(), 2, prefix="US$ ")
-
-    # Para Fator de Internação e Fator por Adição, calcular média dos itens
-    overall_fator_internacao = itens_df["Fator de Internação"].apply(lambda x: float(str(x).replace('.', '').replace(',', '.'))).mean() if not itens_df.empty else 0.0
-    overall_fator_por_adicao = itens_df["Fator por Adição"].apply(lambda x: float(str(x).replace('.', '').replace(',', '.'))).mean() if not itens_df.empty else 0.0
-    total_row_data["Fator de Internação"] = _format_float(overall_fator_internacao, 4)
-    total_row_data["Fator por Adição"] = _format_float(overall_fator_por_adicao, 4)
-
-    itens_df = pd.concat([itens_df, pd.DataFrame([total_row_data])], ignore_index=True)
-
     return process_totals, taxes_data, expenses_display, itens_df, soma_contratos_usd, diferenca_contratos_usd
 
 # --- Funções de Geração de Arquivos ---
@@ -434,7 +527,8 @@ def _generate_excel_for_cadastro(di_data, itens_data, item_erp_codes):
         st.warning("Nenhum dado de DI ou itens carregado para gerar o Excel.")
         return None, None
 
-    referencia_di = di_data[6] if di_data[6] else "SemReferencia"
+    referencia_di = di_data.get('informacao_complementar') # Acessando como dicionário
+    referencia_di = referencia_di if referencia_di else "SemReferencia"
     
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -454,15 +548,14 @@ def _generate_excel_for_cadastro(di_data, itens_data, item_erp_codes):
 
 
     for item_data in itens_data:
-        # Ensure item_data is a tuple or list, and access by index
-        # If it's a sqlite3.Row object, convert to tuple/list first
-        if isinstance(item_data, sqlite3.Row):
-            item_data = tuple(item_data)
-
-        (item_id, decl_id, num_adicao, num_item_seq, desc_mercadoria, qty, unit_medida,
-         val_unit_fob_usd, val_item_calculado_fob_brl, peso_liquido_item, ncm_item, sku_item,
-         custo_unit_di_usd, ii_perc_item, ipi_perc_item, pis_perc_item, cofins_perc_item, icms_perc_item,
-         codigo_erp_do_db) = item_data
+        # Garante que item_data é um dicionário para acesso por chave
+        item_dict = dict(item_data) # if isinstance(item_data, sqlite3.Row) else item_data # Removed sqlite3.Row check
+        item_id = item_dict.get('id')
+        desc_mercadoria = item_dict.get('descricao_mercadoria')
+        qty = item_dict.get('quantidade')
+        ncm_item = item_dict.get('ncm_item')
+        sku_item = item_dict.get('sku_item')
+        codigo_erp_do_db = item_dict.get('codigo_erp_item')
 
         display_desc_mercadoria = desc_mercadoria
         # Usando a mesma lógica de extração de SKU para o Excel
@@ -530,8 +623,10 @@ def _import_excel_for_cadastro(uploaded_file, itens_data):
             return 0
 
         updates_count = 0
-        # Criar um mapeamento de item_id para item_tuple para busca eficiente
-        itens_data_map = {item[0]: item for item in itens_data}
+        # Criar um mapeamento de item_id para item_dict para busca eficiente
+        # Convertendo todos os itens_data para dicionários para o mapa
+        itens_data_map = {item.get('id'): item for item in [dict(i) for i in itens_data]} # Corrigido: removed sqlite3.Row check
+
 
         for _, row in df.iterrows():
             erp_code = row['COD']
@@ -540,16 +635,21 @@ def _import_excel_for_cadastro(uploaded_file, itens_data):
             if pd.isna(erp_code) or pd.isna(item_id_from_excel):
                 continue
             
-            # Converter item_id_from_excel para o mesmo tipo que o item_id do banco (int)
-            try:
-                item_id_from_excel = int(item_id_from_excel)
-            except ValueError:
-                st.warning(f"ID do Item '{item_id_from_excel}' no Excel não é um número válido. Pulando esta linha.")
-                continue
-
-            # Buscar o item_id diretamente no mapeamento
-            if item_id_from_excel in itens_data_map:
-                found_item_id = item_id_from_excel
+            # Converter item_id_from_excel para o mesmo tipo que o item_id do banco (pode ser int ou string)
+            # Como o ID no db_utils pode vir como string (Firestore) ou int (SQLite),
+            # garantimos que o tipo seja o mesmo do ID no mapa.
+            # Se o ID no mapa é string, converte o do excel para string.
+            # Se o ID no mapa é int, converte o do excel para int.
+            # Assumiremos que o ID no Excel é o ID retornado pelo DB (seja int ou string).
+            
+            found_item_in_map = False
+            for map_key, map_value in itens_data_map.items():
+                if str(map_key) == str(item_id_from_excel): # Compara como string para flexibilidade
+                    found_item_id = map_key
+                    found_item_in_map = True
+                    break
+            
+            if found_item_in_map:
                 if update_xml_item_erp_code(found_item_id, str(erp_code).strip()):
                     st.session_state.item_erp_codes[found_item_id] = str(erp_code).strip()
                     updates_count += 1
@@ -569,28 +669,24 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
         st.warning("Nenhum dado de DI ou itens carregado para gerar o relatório.")
         return None, None
 
-    referencia_processo = di_data[6] if di_data[6] else "SemReferencia"
+    referencia_processo = di_data.get('informacao_complementar') # Acessando como dicionário
+    referencia_processo = referencia_processo if referencia_processo else "SemReferencia"
     file_name = f"{referencia_processo}_Relatorio.pdf"
 
     buffer = io.BytesIO() 
-    doc = SimpleDocTemplate(buffer) # Inicializa sem pagesize para adicionar templates
-
+    
     # Define frames para o modo retrato
-    # Margens: 1 inch de cada lado (topo, base, esq, dir)
     leftMargin, rightMargin, topMargin, bottomMargin = inch, inch, inch, inch
-
     frame_portrait = Frame(leftMargin, bottomMargin, 
                            A4[0] - leftMargin - rightMargin, # Largura útil
                            A4[1] - topMargin - bottomMargin, # Altura útil
                            id='portrait_frame')
 
     # Define frames para o modo paisagem
-    # landscape(A4) é (altura_A4, largura_A4)
-    # Correção: Definir todas as margens para paisagem explicitamente
     landscape_left_margin, landscape_bottom_margin = inch, inch
-    landscape_right_margin, landscape_top_margin = inch, inch # Definir as margens
-    landscape_width_usable = landscape(A4)[0] - landscape_left_margin - landscape_right_margin # Largura útil em paisagem
-    landscape_height_usable = landscape(A4)[1] - landscape_top_margin - landscape_bottom_margin # Altura útil em paisagem
+    landscape_right_margin, landscape_top_margin = inch, inch 
+    landscape_width_usable = landscape(A4)[0] - landscape_left_margin - landscape_right_margin 
+    landscape_height_usable = landscape(A4)[1] - landscape_top_margin - landscape_bottom_margin 
 
     frame_landscape = Frame(landscape_left_margin, landscape_bottom_margin, 
                             landscape_width_usable,
@@ -600,10 +696,12 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
     # Define PageTemplates
     portrait_template = PageTemplate(id='PortraitPage', frames=[frame_portrait], pagesize=A4)
     landscape_template = PageTemplate(id='LandscapePage', frames=[frame_landscape], pagesize=landscape(A4))
-
-    # Adiciona os templates ao documento
-    doc.addPageTemplates([portrait_template, landscape_template])
     
+    # Inicializa SimpleDocTemplate com os pageTemplates
+    doc = SimpleDocTemplate(buffer, pagesize=A4) # A página principal é A4 por padrão
+    doc.addPageTemplates([portrait_template, landscape_template]) # Adiciona os templates
+
+
     # Importante: story precisa ser uma lista
     story = []
     
@@ -617,32 +715,32 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
     style_bold = ParagraphStyle(name='BoldStyle', parent=style_normal, fontName='Helvetica-Bold')
 
     # Conteúdo das primeiras páginas (modo retrato)
-    story.append(Paragraph(f"Relatório do Processo de Importação - DI: {_format_di_number(di_data[1])}", style_title))
+    story.append(Paragraph(f"Relatório do Processo de Importação - DI: {_format_di_number(di_data.get('numero_di'))}", style_title))
     story.append(Spacer(1, 0.2*inch))
 
     # --- Dados Gerais da DI ---
     story.append(Paragraph("Dados Gerais da Declaração de Importação:", style_heading))
     di_general_data = [
-        ["Referência:", di_data[6]],
-        ["Número DI:", _format_di_number(di_data[1])],
-        ["Data DI:", datetime.strptime(di_data[2], "%Y-%m-%d").strftime("%d/%m/%Y") if di_data[2] else "N/A"],
-        ["VMLE:", _format_currency(di_data[7])],
-        ["Frete DI:", _format_currency(di_data[8])],
-        ["Seguro DI:", _format_currency(di_data[9])],
-        ["VMLD (CIF):", _format_currency(di_data[10])],
-        ["Taxa Cambial (USD):", _format_float(di_data[15], 6)],
-        ["Nº Invoice:", di_data[17]],
-        ["Peso Bruto Total (KG):", _format_weight_no_kg(di_data[18])],
-        ["Peso Líquido Total (KG):", _format_weight_no_kg(di_data[19])],
-        ["CNPJ Importador:", di_data[20]],
-        ["Importador Nome:", di_data[21]],
-        ["Recinto:", di_data[22]],
-        ["Embalagem:", di_data[23]],
-        ["Quantidade Volumes:", _format_int(di_data[24])],
-        ["Acréscimo:", _format_currency(di_data[25])],
-        ["Imposto de Importação:", _format_currency(di_data[26])],
-        ["Armazenagem (DB):", _format_currency(di_data[27])],
-        ["Frete Nacional (DB):", _format_currency(di_data[28])],
+        ["Referência:", di_data.get('informacao_complementar')],
+        ["Número DI:", _format_di_number(di_data.get('numero_di'))],
+        ["Data DI:", datetime.strptime(di_data.get('data_registro'), "%Y-%m-%d").strftime("%d/%m/%Y") if di_data.get('data_registro') else "N/A"],
+        ["VMLE:", _format_currency(di_data.get('vmle'))],
+        ["Frete DI:", _format_currency(di_data.get('frete'))],
+        ["Seguro DI:", _format_currency(di_data.get('seguro'))],
+        ["VMLD (CIF):", _format_currency(di_data.get('vmld'))],
+        ["Taxa Cambial (USD):", _format_float(di_data.get('taxa_cambial_usd'), 6)],
+        ["Nº Invoice:", di_data.get('numero_invoice')],
+        ["Peso Bruto Total (KG):", _format_weight_no_kg(di_data.get('peso_bruto'))],
+        ["Peso Líquido Total (KG):", _format_weight_no_kg(di_data.get('peso_liquido'))],
+        ["CNPJ Importador:", di_data.get('cnpj_importador')],
+        ["Importador Nome:", di_data.get('importador_nome')],
+        ["Recinto:", di_data.get('recinto')],
+        ["Embalagem:", di_data.get('embalagem')],
+        ["Quantidade Volumes:", _format_int(di_data.get('quantidade_volumes'))],
+        ["Acréscimo:", _format_currency(di_data.get('acrescimo'))],
+        ["Imposto de Importação:", _format_currency(di_data.get('imposto_importacao'))],
+        ["Armazenagem (DB):", _format_currency(di_data.get('armazenagem'))],
+        ["Frete Nacional (DB):", _format_currency(di_data.get('frete_nacional'))],
     ]
     table_di_general = Table(di_general_data, colWidths=[2.5*inch, 5*inch])
     table_di_general.setStyle(TableStyle([
@@ -749,11 +847,14 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
         ["Nº Contrato", "Dólar", "Valor (USD)"]
     ]
     for index, row in st.session_state.contracts_df.iterrows():
-        num_contrato = row['Nº Contrato']
-        dolar = _format_float(row['Dólar'], 4)
-        valor_usd = _format_float(row['Valor (US$)'], 2, prefix="US$ ")
+        num_contrato = row.get('Nº Contrato')
+        dolar = _format_float(row.get('Dólar', 0.0), 4)
+        valor_usd = _format_float(row.get('Valor (US$)', 0.0), 2, prefix="US$ ")
         try:
-            if (float(row['Dólar']) > 0 and float(row['Valor (US$)']) > 0) or (num_contrato and num_contrato != f"Contrato {index+1}"):
+            # Incluir a linha apenas se tiver Valor (US$) ou se o número do contrato não for o padrão
+            # para evitar linhas vazias desnecessárias se o usuário deletou valores
+            if (float(str(row.get('Valor (US$)', 0.0)).replace('US$', '').replace(',', '.')) > 0 or \
+                (num_contrato and not str(num_contrato).startswith("Contrato "))):
                 cambio_data.append([num_contrato, dolar, valor_usd])
         except ValueError:
             pass
@@ -794,12 +895,12 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
     item_data_for_pdf = [item_headers_pdf]
 
     for index, row in itens_df_calculated.iterrows():
-        if row["Código ERP"] == "TOTAL": # Skip the total row
+        if row.get("Código ERP") == "TOTAL": # Skip the total row
             continue
         row_values_for_pdf = [
-            row["Código ERP"], row["NCM"], row["SKU"], row["Quantidade"], row["CIF Unitário"],
-            row["II %"], row["IPI %"], row["PIS %"], row["COFINS %"], row["Fator de Internação"],
-            row["VLME (BRL)"], row["VLMD (BRL)"]
+            row.get("Código ERP"), row.get("NCM"), row.get("SKU"), row.get("Quantidade"), row.get("CIF Unitário"),
+            row.get("II %"), row.get("IPI %"), row.get("PIS %"), row.get("COFINS %"), row.get("Fator de Internação"),
+            row.get("VLME (BRL)"), row.get("VLMD (BRL)")
         ]
         item_data_for_pdf.append(row_values_for_pdf)
 
@@ -825,7 +926,7 @@ def _generate_process_report_pdf(di_data, itens_df_calculated, soma_contratos_us
         ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
         ('BOTTOMPADDING', (0,0), (-1,0), 6),
         ('BACKGROUND', (0,1), (-1,-1), colors.beige),
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
@@ -852,13 +953,28 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
         st.warning("Nenhum dado de DI carregado para gerar a capa.")
         return None, None
 
-    referencia_processo = di_data[6] if di_data[6] else "SemReferencia"
+    referencia_processo = di_data.get('informacao_complementar') # Acessando como dicionário
+    referencia_processo = referencia_processo if referencia_processo else "SemReferencia"
     file_name = f"{referencia_processo}_Capa.pdf"
 
     try:
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4) # Capa permanece em A4 retrato
         
+        # Define frames para o modo retrato (apenas para capa)
+        leftMargin, rightMargin, topMargin, bottomMargin = inch, inch, inch, inch
+        frame_portrait = Frame(leftMargin, bottomMargin, 
+                               A4[0] - leftMargin - rightMargin, 
+                               A4[1] - topMargin - bottomMargin, 
+                               id='portrait_frame_cover') # ID único para a capa
+
+        # Define PageTemplate e passa para o SimpleDocTemplate
+        portrait_template_cover = PageTemplate(id='PortraitPageCover', frames=[frame_portrait], pagesize=A4)
+        
+        # Inicializa SimpleDocTemplate com o pageTemplate da capa
+        doc = SimpleDocTemplate(buffer, pagesize=A4) # A página principal é A4 por padrão
+        doc.addPageTemplates([portrait_template_cover]) # Adiciona o template da capa
+
+
         # Lista para armazenar os elementos do PDF
         story = []
         styles = getSampleStyleSheet()
@@ -886,18 +1002,20 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
             story.append(Paragraph("PICHAU", style_center_bold_large))
         story.append(Spacer(1, 0.1*inch))
 
-        story.append(Paragraph(f"REFERÊNCIA DO PROCESSO: {di_data[6] if di_data[6] else ''}", style_center_bold))
+        story.append(Paragraph(f"REFERÊNCIA DO PROCESSO: {di_data.get('informacao_complementar') if di_data.get('informacao_complementar') else ''}", style_center_bold))
         story.append(Spacer(1, 0.1*inch))
 
-        # Data from DI (index based on db_utils.get_declaracao_by_id)
-        (id_db, numero_di, data_registro_db, valor_total_reais_xml,
-         arquivo_origem, data_importacao, informacao_complementar,
-         vmle_declaracao, frete_declaracao, seguro_declaracao, vmld_declaracao,
-         ipi_total_declaracao, pis_pasep_total_declaracao, cofins_total_declaracao, icms_sc,
-         taxa_cambial_usd_declaracao, taxa_siscomex_total_declaracao, numero_invoice,
-         peso_bruto_total, peso_liquido_total, cnpj_importador, importador_nome,
-         recinto, embalagem, quantidade_volumes_total, acrescimo_total_declaracao,
-         imposto_importacao_total_declaracao, armazenagem_db, frete_nacional_db) = di_data
+        # Data from DI (Acessando como dicionário)
+        numero_di = di_data.get('numero_di')
+        data_registro_db = di_data.get('data_registro')
+        vmle_declaracao = di_data.get('vmle', 0.0)
+        frete_declaracao = di_data.get('frete', 0.0)
+        seguro_declaracao = di_data.get('seguro', 0.0)
+        vmld_declaracao = di_data.get('vmld', 0.0)
+        taxa_cambial_usd_declaracao = di_data.get('taxa_cambial_usd', 0.0)
+        peso_bruto_total = di_data.get('peso_bruto', 0.0)
+        quantidade_volumes_total = di_data.get('quantidade_volumes', 0)
+
 
         vmle_usd_capa = vmle_declaracao / taxa_cambial_usd_declaracao if taxa_cambial_usd_declaracao > 0 else 0.0
         frete_usd_capa = frete_declaracao / taxa_cambial_usd_declaracao if taxa_cambial_usd_declaracao > 0 else 0.0
@@ -923,16 +1041,18 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
         story.append(table_desembaraco)
         
         
-
+        # Acessando itens_data como lista de dicionários
+        total_qty_items = sum(item.get('quantidade', 0) for item in st.session_state.itens_data) # Alterado aqui
+        
         produtos_data = [
             ["FORNECEDOR:", st.session_state.capa_fornecedor_var],
             ["PRODUTOS:", st.session_state.capa_produtos_var],
             ["VOLUMES:", "CAIXA"], # Mock
-            ["QTDE ITENS:", _format_int_no_float(sum(item[5] for item in st.session_state.itens_data if item[5] is not None))],
+            ["QTDE ITENS:", _format_int_no_float(total_qty_items)], # Sum of quantities from dictionary items
             ["QTDE VOLUMES:", _format_int(quantidade_volumes_total)],
         ]
         try: # Safely check if capa_quantidade_containers_var is a valid number
-            if st.session_state.capa_modal_var == "MARITIMO" and float(st.session_state.capa_quantidade_containers_var.replace(',', '.')) > 0:
+            if st.session_state.capa_modal_var == "MARITIMO" and float(str(st.session_state.capa_quantidade_containers_var).replace(',', '.')) > 0:
                 produtos_data.append(["QUANTIDADE DE CONTAINERS:", st.session_state.capa_quantidade_containers_var])
         except ValueError:
             pass # If not a valid number, skip adding it
@@ -1022,9 +1142,18 @@ def _generate_cover_pdf(di_data, total_para_nf, process_totals, contracts_df):
 def update_all_calculations():
     """Recalcula todos os totais e atualiza a session_state."""
     if st.session_state.di_data:
+        # Pega a di_data atual do session_state (já deve ser um dicionário)
+        
+        # Pega itens_data (garantindo que seja uma lista de dicionários, se vier de Row)
+        itens_data_for_calc = [dict(item) for item in st.session_state.itens_data]
+
+        # Acessa frete da DI do st.session_state.di_data
+        frete_declaracao_val = st.session_state.di_data.get('frete', 0.0) 
+
         process_totals, taxes_data, expenses_display, itens_df_calculated, soma_contratos_usd, diferenca_contratos_usd = \
-            perform_calculations(st.session_state.di_data, st.session_state.itens_data,
-                                  st.session_state.expense_inputs, st.session_state.contracts_df)
+            perform_calculations(st.session_state.di_data, itens_data_for_calc, # Passa di_data diretamente
+                                  st.session_state.expense_inputs, st.session_state.contracts_df, 
+                                  st.session_state.frete_internacional_calculado_val) # Passa o valor do frete internacional
         
         st.session_state.process_totals = process_totals
         st.session_state.taxes_data = taxes_data
@@ -1040,6 +1169,132 @@ def update_all_calculations():
             st.session_state.total_para_nf = 0.0
     # Removido st.rerun() daqui, pois o Streamlit reexecuta naturalmente ao alterar session_state
 
+# NOVO: Função centralizada de busca e carregamento para Custo do Processo
+def _load_process_cost_data(search_ref_value):
+    """
+    Carrega os dados de custo do processo (DI, itens, despesas, contratos)
+    com base na referência fornecida.
+    Atualiza diretamente o st.session_state.
+    """
+    if not search_ref_value:
+        st.session_state.di_data = None
+        st.session_state.itens_data = []
+        st.session_state.item_erp_codes = {}
+        st.session_state.expense_inputs = {'afrmm': 0.00, 'siscoserv': 0.00, 'descarregamento': 0.00, 'multa': 0.00} # Removido taxas_destino aqui
+        st.session_state.contracts_df = pd.DataFrame({'Nº Contrato': [f"Contrato {i+1}" for i in range(10)], 'Dólar': [0.0000] * 10, 'Valor (US$)': [0.00] * 10})
+        st.session_state.capa_fornecedor_var = "" # Limpa o fornecedor da capa
+        st.session_state.contracts_df_updated_by_button = True # Força o recálculo inicial para limpar
+        st.session_state.frete_internacional_calculado_val = 0.0 # Reseta o frete internacional
+        return False
+
+    declaracao = get_declaracao_by_referencia(search_ref_value)
+    if declaracao:
+        st.session_state.di_data = declaracao # di_data agora é um dicionário
+        st.session_state.itens_data = get_itens_by_declaracao_id(declaracao.get('id')) # Acessando 'id' como chave
+        
+        # Load existing ERP codes from DB for items
+        st.session_state.item_erp_codes = {}
+        if st.session_state.itens_data:
+            for item_data_dict in st.session_state.itens_data: # Já são dicionários
+                item_id_db = item_data_dict.get('id')
+                codigo_erp_from_db = item_data_dict.get('codigo_erp_item')
+                if item_id_db and codigo_erp_from_db:
+                    st.session_state.item_erp_codes[item_id_db] = codigo_erp_from_db
+
+        # Load existing expenses and contracts from DB
+        expenses_db, contracts_db = get_process_cost_data(declaracao.get('id')) # Acessando 'id' como chave
+        if expenses_db:
+            st.session_state.expense_inputs = {
+                'afrmm': expenses_db.get('afrmm', 0.0), # Acessando como dicionário
+                'siscoserv': expenses_db.get('siscoserv', 0.0),
+                'descarregamento': expenses_db.get('descarregamento', 0.0),
+                # 'taxas_destino': expenses_db.get('taxas_destino', 0.0), # Taxas destino agora é calculado
+                'multa': expenses_db.get('multa', 0.0),
+            }
+        else: # Default if no data found
+            st.session_state.expense_inputs = {
+                'afrmm': 0.00, 'siscoserv': 0.00, 'descarregamento': 0.00, 'taxas_destino': 0.00, 'multa': 0.00,
+            }
+        
+        # Initialize contracts_df
+        contracts_df_data = []
+        if contracts_db:
+            for contract_dict in contracts_db: # Já são dicionários
+                contracts_df_data.append({
+                    'Nº Contrato': contract_dict.get('numero_contrato'),
+                    'Dólar': contract_dict.get('dolar_cambio'),
+                    'Valor (US$)': contract_dict.get('valor_usd')
+                })
+        else: # Default empty contracts
+            for i in range(10):
+                contracts_df_data.append({
+                    'Nº Contrato': f"Contrato {i+1}",
+                    'Dólar': 0.0000,
+                    'Valor (US$)': 0.00
+                })
+        st.session_state.contracts_df = pd.DataFrame(contracts_df_data)
+
+        # Preenche o primeiro contrato com a taxa cambial da DI e o VMLE em Dólar se não houver contratos carregados
+        # e também os demais campos de Dólar
+        if declaracao.get('taxa_cambial_usd') is not None and declaracao.get('taxa_cambial_usd') > 0:
+            taxa_cambial = declaracao.get('taxa_cambial_usd')
+            vmle_brl = declaracao.get('vmle', 0.0)
+            if taxa_cambial > 0:
+                vmle_usd = vmle_brl / taxa_cambial
+                
+                # Se não há contratos carregados, preenche o primeiro
+                if not contracts_db and not st.session_state.contracts_df.empty:
+                    st.session_state.contracts_df.loc[0, 'Dólar'] = taxa_cambial
+                    st.session_state.contracts_df.loc[0, 'Valor (US$)'] = vmle_usd
+                
+                # Preenche todas as linhas da coluna 'Dólar' com a taxa cambial da DI
+                # Apenas se a coluna Dólar existir e o DataFrame não estiver vazio
+                if 'Dólar' in st.session_state.contracts_df.columns and not st.session_state.contracts_df.empty:
+                    st.session_state.contracts_df['Dólar'] = taxa_cambial
+
+
+        # NOVO: Carrega o valor do frete internacional do banco de dados (se houver)
+        frete_internacional_data = get_frete_internacional_by_referencia(declaracao.get('informacao_complementar'))
+        logger.debug(f"Frete internacional raw data para '{declaracao.get('informacao_complementar')}': {frete_internacional_data}")
+
+        if frete_internacional_data:
+            if frete_internacional_data.get('tipo_frete') == 'Aéreo':
+                st.session_state.frete_internacional_calculado_val = frete_internacional_data.get('total_aereo_brl', 0.0)
+            elif frete_internacional_data.get('tipo_frete') == 'Marítimo':
+                st.session_state.frete_internacional_calculado_val = frete_internacional_data.get('total_maritimo_brl', 0.0)
+            logger.debug(f"Frete internacional calculado_val set to: {st.session_state.frete_internacional_calculado_val}")
+        else:
+            st.session_state.frete_internacional_calculado_val = 0.0
+            logger.debug("Frete internacional data not found for this reference, setting to 0.0.")
+
+
+        # Atualiza capa_fornecedor_var com o nome do importador
+        st.session_state.capa_fornecedor_var = declaracao.get('importador_nome', "")
+
+        st.success(f"Dados do processo '{search_ref_value}' carregados!")
+        st.session_state.contracts_df_updated_by_button = True # Força a atualização dos cálculos
+        return True # Indica sucesso no carregamento
+    else:
+        st.session_state.di_data = None
+        st.session_state.itens_data = []
+        st.session_state.item_erp_codes = {}
+        st.session_state.expense_inputs = {'afrmm': 0.00, 'siscoserv': 0.00, 'descarregamento': 0.00, 'taxas_destino': 0.00, 'multa': 0.00}
+        st.session_state.contracts_df = pd.DataFrame({'Nº Contrato': [f"Contrato {i+1}" for i in range(10)], 'Dólar': [0.0000] * 10, 'Valor (US$)': [0.00] * 10})
+        st.session_state.capa_fornecedor_var = "" # Limpa o fornecedor da capa
+        st.warning(f"Nenhum processo encontrado com a referência: {search_ref_value}")
+        st.session_state.contracts_df_updated_by_button = True # Força o recálculo inicial para limpar
+        st.session_state.frete_internacional_calculado_val = 0.0 # Reseta o frete internacional
+        return False
+
+
+def _on_search_ref_change():
+    """Callback para o st.text_input 'Referência do Processo'."""
+    # Chama a função de carregamento com o valor atual do input
+    _load_process_cost_data(st.session_state.custo_search_ref_input_widget)
+    # Force um rerun para que a UI se atualize com os novos dados
+    st.rerun()
+
+
 # --- Função Principal da Página de Custo ---
 def show_page():
     background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
@@ -1053,14 +1308,14 @@ def show_page():
         st.session_state.item_erp_codes = {}
     if 'expense_inputs' not in st.session_state:
         st.session_state.expense_inputs = {
-            'afrmm': 0.00, 'siscoserv': 0.00, 'descarregamento': 0.00, 'taxas_destino': 0.00, 'multa': 0.00,
+            'afrmm': 0.00, 'siscoserv': 0.00, 'descarregamento': 0.00, 'taxas_destino': 0.00, 'multa': 0.00, # Taxas destino é inicializado mas será calculado
         }
     if 'contracts_df' not in st.session_state:
         st.session_state.contracts_df = pd.DataFrame({
             'Nº Contrato': [f"Contrato {i+1}" for i in range(10)], 'Dólar': [0.0000] * 10, 'Valor (US$)': [0.00] * 10
         })
     if 'custo_search_ref_input' not in st.session_state:
-        st.session_state.custo_search_ref_input = "PCH-"
+        st.session_state.custo_search_ref_input = "PCH-" # Valor inicial padrão
     if 'process_totals' not in st.session_state:
         st.session_state.process_totals = {}
     if 'taxes_data' not in st.session_state:
@@ -1094,112 +1349,70 @@ def show_page():
         st.session_state.capa_nf_entrada_var = ""
     
     # Adicionada flag para controlar a atualização do contracts_df
+    # A flag agora indica que o DataFrame de contratos foi ATUALIZADO PELO USUÁRIO (data_editor)
+    # ou se os dados foram recém-carregados (para forçar o recálculo inicial).
     if 'contracts_df_updated_by_button' not in st.session_state:
-        st.session_state.contracts_df_updated_by_button = True # Começa como True para carregar os dados iniciais
+        st.session_state.contracts_df_updated_by_button = True 
+
+    # NOVO: Estado para rastrear a última referência de custo processada.
+    # Isso evita reprocessar a mesma DI múltiplas vezes desnecessariamente.
+    if 'last_processed_cost_reference' not in st.session_state:
+        st.session_state.last_processed_cost_reference = None
+    
+    # NOVO: Valor calculado para frete internacional, obtido do DB
+    if 'frete_internacional_calculado_val' not in st.session_state:
+        st.session_state.frete_internacional_calculado_val = 0.0
+
+
+    # Lógica de carregamento inicial da DI ao entrar na página
+    # Isso é acionado se a 'custo_search_ref_input' foi preenchida na navegação
+    # E se não corresponde à última referência já processada.
+    current_search_ref = st.session_state.custo_search_ref_input
+    
+    # Usamos uma cópia do search_ref do session_state, pois o widget pode sobrescrever
+    # st.session_state.custo_search_ref_input_widget com seu valor inicial
+    # antes que esta lógica seja executada em alguns cenários de rerun.
+    # A verificação deve ser feita com base no valor que foi *passado* para a página,
+    # não o valor que o widget pode ter reinicializado.
+
+    # Se o valor atual da referência de busca for diferente da última processada
+    # E o valor da referência de busca não estiver vazio:
+    if current_search_ref and \
+       _clean_reference_string(current_search_ref) != _clean_reference_string(st.session_state.last_processed_cost_reference):
+        
+        logger.info(f"Detectada nova referência de custo '{current_search_ref}'. Tentando carregamento inicial da DI e custos.")
+        if _load_process_cost_data(current_search_ref):
+            st.session_state.last_processed_cost_reference = current_search_ref # Atualiza a última referência processada
+            # Não é necessário st.rerun() aqui, pois o script continua a re-renderizar
+            # e a UI será atualizada com os novos dados do session_state.
+        else:
+            # Se a carga inicial falhou, limpar last_processed_cost_reference para que a próxima tentativa seja válida
+            st.session_state.last_processed_cost_reference = None
+
 
     st.subheader("Processo")
     col1_search, col2_search, col3 = st.columns([0.4, 0.2, 0.4])
 
     with col1_search:
-        search_ref = st.text_input("Referência do Processo", value=st.session_state.custo_search_ref_input, key="custo_search_ref_input_widget")
-        st.session_state.custo_search_ref_input = search_ref # Atualiza o valor persistente
+        # st.text_input com on_change para carregar automaticamente
+        st.text_input(
+            "Referência do Processo", 
+            value=st.session_state.custo_search_ref_input, 
+            key="custo_search_ref_input_widget",
+            on_change=_on_search_ref_change # Chama o callback ao mudar o valor
+        )
+        # O valor de st.session_state.custo_search_ref_input é atualizado automaticamente via key do widget
+        # st.session_state.custo_search_ref_input = st.session_state.custo_search_ref_input_widget # Não mais necessário se o 'value' for direto da session_state
 
+
+    # O botão "Pesquisar" foi removido.
     with col2_search:
-        st.write("") # Espaço para alinhar o botão
+        st.write("") # Espaço para alinhar
         st.write("")
-        if st.button("Pesquisar", key="custo_search_button"):
-            declaracao = get_declaracao_by_referencia(search_ref)
-            if declaracao:
-                st.session_state.di_data = declaracao
-                st.session_state.itens_data = get_itens_by_declaracao_id(declaracao[0])
-                
-                # Load existing ERP codes from DB for items
-                st.session_state.item_erp_codes = {}
-                if st.session_state.itens_data:
-                    for item_tuple in st.session_state.itens_data:
-                        # Ensure item_tuple is a tuple/list, not sqlite3.Row
-                        if isinstance(item_tuple, sqlite3.Row):
-                            item_tuple = tuple(item_tuple)
-                        item_id_db = item_tuple[0]
-                        codigo_erp_from_db = item_tuple[17] # 18th element is codigo_erp_item
-                        if codigo_erp_from_db:
-                            st.session_state.item_erp_codes[item_id_db] = codigo_erp_from_db
-
-                # Load existing expenses and contracts from DB
-                expenses_db, contracts_db = get_process_cost_data(declaracao[0])
-                if expenses_db:
-                    st.session_state.expense_inputs = {
-                        'afrmm': expenses_db[0],
-                        'siscoserv': expenses_db[1],
-                        'descarregamento': expenses_db[2],
-                        'taxas_destino': expenses_db[3],
-                        'multa': expenses_db[4],
-                    }
-                else: # Default if no data found
-                    st.session_state.expense_inputs = {
-                        'afrmm': 0.00, 'siscoserv': 0.00, 'descarregamento': 0.00, 'taxas_destino': 0.00, 'multa': 0.00,
-                    }
-                
-                # Initialize contracts_df
-                contracts_df_data = []
-                if contracts_db:
-                    for contract in contracts_db:
-                        # Ensure contract is a tuple/list, not sqlite3.Row
-                        if isinstance(contract, sqlite3.Row):
-                            contract = tuple(contract)
-                        contracts_df_data.append({
-                            'Nº Contrato': contract[0],
-                            'Dólar': contract[1],
-                            'Valor (US$)': contract[2]
-                        })
-                else: # Default empty contracts
-                    for i in range(10):
-                        contracts_df_data.append({
-                            'Nº Contrato': f"Contrato {i+1}",
-                            'Dólar': 0.0000,
-                            'Valor (US$)': 0.00
-                        })
-                st.session_state.contracts_df = pd.DataFrame(contracts_df_data)
-
-                # Preenche o primeiro contrato com a taxa cambial da DI e o VMLE em Dólar se não houver contratos carregados
-                # e também os demais campos de Dólar
-                if declaracao[15] is not None and declaracao[15] > 0: # taxa_cambial_usd_declaracao
-                    taxa_cambial = declaracao[15]
-                    vmle_brl = declaracao[7] if declaracao[7] is not None else 0.0 # vmle_declaracao
-                    if taxa_cambial > 0:
-                        vmle_usd = vmle_brl / taxa_cambial
-                        
-                        # Se não há contratos carregados, preenche o primeiro
-                        if not contracts_db:
-                            st.session_state.contracts_df.loc[0, 'Dólar'] = taxa_cambial
-                            st.session_state.contracts_df.loc[0, 'Valor (US$)'] = vmle_usd
-                        
-                        # Preenche todas as linhas da coluna 'Dólar' com a taxa cambial da DI
-                        st.session_state.contracts_df['Dólar'] = taxa_cambial
-
-
-                # Atualiza capa_fornecedor_var com o nome do importador
-                st.session_state.capa_fornecedor_var = declaracao[21] if declaracao[21] else ""
-
-
-                st.success(f"Dados do processo '{search_ref}' carregados!")
-                st.session_state.contracts_df_updated_by_button = True # Força a atualização dos cálculos
-                
-            else:
-                st.session_state.di_data = None
-                st.session_state.itens_data = []
-                st.session_state.item_erp_codes = {}
-                st.session_state.expense_inputs = {'afrmm': 0.00, 'siscoserv': 0.00, 'descarregamento': 0.00, 'taxas_destino': 0.00, 'multa': 0.00}
-                st.session_state.contracts_df = pd.DataFrame({'Nº Contrato': [f"Contrato {i+1}" for i in range(10)], 'Dólar': [0.0000] * 10, 'Valor (US$)': [0.00] * 10})
-                st.session_state.capa_fornecedor_var = "" # Limpa o fornecedor da capa
-                st.warning(f"Nenhum processo encontrado com a referência: {search_ref}")
-            
-            # Após carregar os dados, force um rerun para que os cálculos iniciais sejam feitos
-            update_all_calculations()
-
+        # Removemos o botão de pesquisa e sua lógica, já que o carregamento é automático.
 
     if st.session_state.di_data:
-        st.markdown(f"**Processo:** {st.session_state.di_data[6]}")
+        st.markdown(f"**Processo:** {st.session_state.di_data.get('informacao_complementar', 'N/A')}")
     else:
         st.markdown("**Processo:** N/A")
 
@@ -1213,9 +1426,19 @@ def show_page():
     # ou pelo botão de atualização dos contratos
     
     # Se a flag contracts_df_updated_by_button for True, recalcula e depois seta para False
-    if st.session_state.contracts_df_updated_by_button:
+    # OU se di_data foi recém-carregado (indicado por di_data ser True e process_totals vazio/não calculado ainda)
+    if st.session_state.contracts_df_updated_by_button or \
+       (st.session_state.di_data and not st.session_state.process_totals):
+        
+        # Garante que as listas e DFs existam para perform_calculations
+        di_data_calc = st.session_state.di_data if st.session_state.di_data else {}
+        itens_data_calc = st.session_state.itens_data if st.session_state.itens_data else []
+        expense_inputs_calc = st.session_state.expense_inputs if st.session_state.expense_inputs else {}
+        contracts_df_calc = st.session_state.contracts_df if st.session_state.contracts_df is not None else pd.DataFrame()
+
+
         process_totals, taxes_data, expenses_display, itens_df_calculated, soma_contratos_usd, diferenca_contratos_usd = \
-            perform_calculations(st.session_state.di_data, st.session_state.itens_data, st.session_state.expense_inputs, st.session_state.contracts_df)
+            perform_calculations(di_data_calc, itens_data_calc, expense_inputs_calc, contracts_df_calc, st.session_state.frete_internacional_calculado_val) # Passa frete internacional
         
         st.session_state.process_totals = process_totals
         st.session_state.taxes_data = taxes_data
@@ -1238,7 +1461,16 @@ def show_page():
     expenses_display = st.session_state.expenses_display
     soma_contratos_usd = st.session_state.soma_contratos_usd
     diferenca_contratos_usd = st.session_state.diferenca_contratos_usd
-    itens_df_calculated = perform_calculations(st.session_state.di_data, st.session_state.itens_data, st.session_state.expense_inputs, st.session_state.contracts_df)[3]
+    # Recalcula itens_df_calculated para ter a versão mais recente, pois ele não é armazenado em session_state diretamente
+    # e depende dos outros session_states.
+    # É importante passar os valores dos session_states para perform_calculations para evitar inconsistências.
+    itens_df_calculated = perform_calculations(
+        st.session_state.di_data if st.session_state.di_data else {},
+        st.session_state.itens_data if st.session_state.itens_data else [],
+        st.session_state.expense_inputs if st.session_state.expense_inputs else {},
+        st.session_state.contracts_df if st.session_state.contracts_df is not None else pd.DataFrame(),
+        st.session_state.frete_internacional_calculado_val # Passa frete internacional
+    )[3]
 
 
     with tab1:
@@ -1251,16 +1483,16 @@ def show_page():
             cols[2].markdown("**Valor (US$)**")
 
             items_to_display = [
-                ("Taxa Cambial", process_totals["Taxa Cambial"], "--"),
-                ("VMLE", process_totals["VMLE (R$)"], process_totals["VMLE (US$)"]),
-                ("Frete", process_totals["Frete (R$)"], process_totals["Frete (US$)"]),
-                ("Seguro", process_totals["Seguro (R$)"], process_totals["Seguro (US$)"]),
-                ("VMLD (CIF)", process_totals["VMLD (CIF) (R$)"], process_totals["VMLD (CIF) (US$)"]),
-                ("Acréscimo", process_totals["Acréscimo (R$)"], process_totals["Acréscimo (US$)"]),
-                ("Peso Total (KG)", process_totals["Peso Total (KG)"], "--"),
-                ("SISCOMEX", process_totals["SISCOMEX"], "--"),
-                ("Despesas Operacionais", process_totals["Despesas Operacionais"], "--"),
-                ("Fator Geral", process_totals["Fator Geral"], "--")
+                ("Taxa Cambial", process_totals.get("Taxa Cambial"), "--"),
+                ("VMLE", process_totals.get("VMLE (R$)"), process_totals.get("VMLE (US$)")),
+                ("Frete", process_totals.get("Frete (R$)"), process_totals.get("Frete (US$)")),
+                ("Seguro", process_totals.get("Seguro (R$)"), process_totals.get("Seguro (US$)")),
+                ("VMLD (CIF)", process_totals.get("VMLD (CIF) (R$)"), process_totals.get("VMLD (CIF) (US$)")),
+                ("Acréscimo", process_totals.get("Acréscimo (R$)"), process_totals.get("Acréscimo (US$)")),
+                ("Peso Total (KG)", process_totals.get("Peso Total (KG)"), "--"),
+                ("SISCOMEX", process_totals.get("SISCOMEX"), "--"),
+                ("Despesas Operacionais", process_totals.get("Despesas Operacionais"), "--"),
+                ("Fator Geral", process_totals.get("Fator Geral"), "--")
             ]
             for item, val_brl, val_usd in items_to_display:
                 cols = st.columns(5)
@@ -1294,7 +1526,7 @@ def show_page():
                 st.session_state.expense_inputs['afrmm'] = st.number_input("AFRMM", value=st.session_state.expense_inputs['afrmm'], format="%.2f", key="afrmm_input", on_change=update_all_calculations)
                 st.session_state.expense_inputs['siscoserv'] = st.number_input("SISCOSERV", value=st.session_state.expense_inputs['siscoserv'], format="%.2f", key="siscoserv_input", on_change=update_all_calculations)
                 st.session_state.expense_inputs['descarregamento'] = st.number_input("DESCARREGAMENTO", value=st.session_state.expense_inputs['descarregamento'], format="%.2f", key="descarregamento_input", on_change=update_all_calculations)
-                st.session_state.expense_inputs['taxas_destino'] = st.number_input("TAXAS DESTINO", value=st.session_state.expense_inputs['taxas_destino'], format="%.2f", key="taxas_destino_input", on_change=update_all_calculations)
+                # st.session_state.expense_inputs['taxas_destino'] = st.number_input("TAXAS DESTINO", value=st.session_state.expense_inputs['taxas_destino'], format="%.2f", key="taxas_destino_input", on_change=update_all_calculations) # REMOVIDO: Taxas Destino não é editável
                 st.session_state.expense_inputs['multa'] = st.number_input("MULTA", value=st.session_state.expense_inputs['multa'], format="%.2f", key="multa_input", on_change=update_all_calculations)
 
             st.markdown("---")
@@ -1309,13 +1541,14 @@ def show_page():
 
             if st.button("Salvar Despesas e Contratos", key="save_expenses_contracts_button"):
                 if st.session_state.di_data:
-                    declaracao_id = st.session_state.di_data[0] # ID da DI
+                    declaracao_id = st.session_state.di_data.get('id') # Acessando 'id' como chave
                     success = save_process_cost_data(
                         declaracao_id,
                         st.session_state.expense_inputs['afrmm'],
                         st.session_state.expense_inputs['siscoserv'],
                         st.session_state.expense_inputs['descarregamento'],
-                        st.session_state.expense_inputs['taxas_destino'],
+                        # st.session_state.expense_inputs['taxas_destino'], # REMOVIDO: Taxas destino não está mais no expense_inputs
+                        (st.session_state.frete_internacional_calculado_val - st.session_state.di_data.get('frete', 0.0)), # Passa o valor calculado de taxas_destino
                         st.session_state.expense_inputs['multa'],
                         st.session_state.contracts_df
                     )
@@ -1370,14 +1603,21 @@ def show_page():
         st.subheader("COMPARATIVOS")
         if st.session_state.di_data:
             # Desempacota os dados da DI novamente para fácil acesso aos valores do banco
-            (id_db, numero_di, data_registro_db, valor_total_reais_xml,
-             arquivo_origem, data_importacao, informacao_complementar,
-             vmle_declaracao, frete_declaracao_db, seguro_declaracao_db, vmld_declaracao,
-             ipi_total_declaracao_db, pis_pasep_total_declaracao_db, cofins_total_declaracao_db, icms_sc,
-             taxa_cambial_usd_declaracao, taxa_siscomex_total_declaracao, numero_invoice,
-             peso_bruto_total, peso_liquido_total, cnpj_importador, importador_importador_nome,
-             recinto, embalagem, quantidade_volumes_total, acrescimo_total_declaracao,
-             imposto_importacao_total_declaracao_db, armazenagem_db, frete_nacional_db) = st.session_state.di_data
+            # AGORA ACESSANDO COMO DICIONÁRIO
+            
+            imposto_importacao_total_declaracao_db = st.session_state.di_data.get('imposto_importacao', 0.0)
+            ipi_total_declaracao_db = st.session_state.di_data.get('ipi', 0.0)
+            pis_pasep_total_declaracao_db = st.session_state.di_data.get('pis_pasep', 0.0)
+            cofins_total_declaracao_db = st.session_state.di_data.get('cofins', 0.0)
+            frete_declaracao_db = st.session_state.di_data.get('frete', 0.0) # Obtém o frete da DI
+            seguro_declaracao_db = st.session_state.di_data.get('seguro', 0.0)
+            armazenagem_db = st.session_state.di_data.get('armazenagem', 0.0)
+            frete_nacional_db = st.session_state.di_data.get('frete_nacional', 0.0)
+            taxa_siscomex_total_declaracao = st.session_state.di_data.get('taxa_siscomex', 0.0)
+
+            # Obtém o valor do frete internacional do session_state
+            frete_internacional_calculado_val_comparison = st.session_state.frete_internacional_calculado_val
+
 
             st.markdown("##### Comparativo de Valores (Calculado vs. Declaração de Importação)")
             
@@ -1422,18 +1662,21 @@ def show_page():
             # mais os valores fixos que não vêm do banco, precisa ser explicitado.
             # No seu código atual, total_despesas_operacionais_db parece estar tentando somar alguns desses.
             # Vou mantê-lo assim, assumindo que ele reflete a "parte do banco" das despesas operacionais.
+            
+            # Reconstruindo o total_despesas_operacionais_db_for_comparison para ser mais preciso
             total_despesas_operacionais_db_for_comparison = (armazenagem_db if armazenagem_db is not None else 0.0) + \
                                                              (frete_nacional_db if frete_nacional_db is not None else 0.0) + \
                                                              (taxa_siscomex_total_declaracao if taxa_siscomex_total_declaracao is not None else 0.0) + \
                                                              1000.00 + 0.00 # Honorário Despachante Fixo e Envio Docs Fixo
 
-            # Adiciona as despesas editáveis do input, pois elas são persistidas e podem vir do banco
-            # (afrmm, siscoserv, descarregamento, taxas_destino, multa)
+            # Adiciona as despesas editáveis do input (exceto taxas_destino, que é calculado)
             total_despesas_operacionais_db_for_comparison += st.session_state.expense_inputs['afrmm']
             total_despesas_operacionais_db_for_comparison += st.session_state.expense_inputs['siscoserv']
             total_despesas_operacionais_db_for_comparison += st.session_state.expense_inputs['descarregamento']
-            total_despesas_operacionais_db_for_comparison += st.session_state.expense_inputs['taxas_destino']
             total_despesas_operacionais_db_for_comparison += st.session_state.expense_inputs['multa']
+            
+            # Adiciona a Taxa Destino CALUCULADA (frete internacional do banco - frete da DI)
+            total_despesas_operacionais_db_for_comparison += (st.session_state.frete_internacional_calculado_val - st.session_state.di_data.get('frete', 0.0))
             
             comparative_data.append(["DESPESAS OPERACIONAIS", _format_currency(despesas_operacionais_calculado), _format_currency(total_despesas_operacionais_db_for_comparison), _format_currency(despesas_operacionais_calculado - total_despesas_operacionais_db_for_comparison)])
 

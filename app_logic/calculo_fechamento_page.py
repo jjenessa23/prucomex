@@ -3,13 +3,15 @@ import pandas as pd
 import logging
 import os
 from datetime import datetime
+import xml.etree.ElementTree as ET # Importa a biblioteca para parsear XML
 
 # Importa as funções reais do db_utils
 try:
-    from db_utils import get_declaracao_by_id
+    from db_utils import get_declaracao_by_id, get_frete_internacional_by_referencia
 except ImportError:
     st.error("Erro: db_utils não encontrado. Certifique-se de que o arquivo está acessível.")
     get_declaracao_by_id = None
+    get_frete_internacional_by_referencia = None
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,39 @@ def _format_int(value):
     except (ValueError, TypeError):
         return "N/A"
 
+def parse_xml_for_vnf(xml_content):
+    """
+    Parses the XML content of an NF-e and extracts the total value (vNF).
+    Returns the vNF as a float, or 0.0 if not found or an error occurs.
+    """
+    try:
+        # Define o namespace para encontrar os elementos corretamente
+        # O namespace pode variar, então tentamos algumas opções comuns
+        namespaces = {
+            'nfe': 'http://www.portalfiscal.inf.br/nfe'
+        }
+        
+        root = ET.fromstring(xml_content)
+        
+        # Procura pelo elemento vNF dentro de ICMSTot
+        # Caminho comum: NFe/infNFe/total/ICMSTot/vNF
+        vnf_element = root.find('.//nfe:vNF', namespaces)
+        
+        if vnf_element is not None and vnf_element.text:
+            return float(vnf_element.text)
+        else:
+            logger.warning("Elemento vNF não encontrado ou vazio no XML.")
+            return 0.0
+    except ET.ParseError as e:
+        logger.error(f"Erro ao parsear XML: {e}")
+        st.error(f"Erro ao ler o arquivo XML. Certifique-se de que é um arquivo XML de NF-e válido. Erro: {e}")
+        return 0.0
+    except Exception as e:
+        logger.error(f"Erro inesperado ao processar XML: {e}")
+        st.error(f"Ocorreu um erro inesperado ao processar o XML: {e}")
+        return 0.0
+
+
 def perform_fechamento_calculations():
     """Realiza os cálculos para a tela de Fechamento."""
     if 'fechamento_di_data' not in st.session_state or not st.session_state.fechamento_di_data:
@@ -54,21 +89,52 @@ def perform_fechamento_calculations():
 
     di_data = st.session_state.fechamento_di_data
 
-    # Desempacota os dados da DI (29 campos)
-    (id_db, numero_di, data_registro_db, valor_total_reais_xml,
-     arquivo_origem, data_importacao, informacao_complementar,
-     vmle, frete_di, seguro_di, vmld, ipi, pis_pasep, cofins, icms_sc,
-     taxa_cambial_usd, taxa_siscomex, numero_invoice, peso_bruto, peso_liquido,
-     cnpj_importador, importador_nome, recinto, embalagem, quantidade_volumes, acrescimo,
-     imposto_importacao, armazenagem_db, frete_nacional_db) = di_data
+    # Acessa os dados usando .get() para robustez
+    # Garante que os nomes das chaves correspondem aos campos no DB
+    # e fornece um valor padrão (0.0 ou "N/A") se a chave não existir.
+    id_db = di_data.get('id')
+    numero_di = di_data.get('numero_di')
+    data_registro_db = di_data.get('data_registro')
+    valor_total_reais_xml = di_data.get('valor_total_reais_xml', 0.0)
+    arquivo_origem = di_data.get('arquivo_origem')
+    data_importacao = di_data.get('data_importacao')
+    informacao_complementar = di_data.get('informacao_complementar')
+    vmle = di_data.get('vmle', 0.0)
+    frete_di = di_data.get('frete', 0.0) # Nome da variável ajustado para evitar conflito com 'frete_internacional_pago_float'
+    seguro_di = di_data.get('seguro', 0.0)
+    vmld = di_data.get('vmld', 0.0)
+    ipi = di_data.get('ipi', 0.0)
+    pis_pasep = di_data.get('pis_pasep', 0.0)
+    cofins = di_data.get('cofins', 0.0)
+    icms_sc = di_data.get('icms_sc')
+    taxa_cambial_usd = di_data.get('taxa_cambial_usd', 0.0)
+    taxa_siscomex = di_data.get('taxa_siscomex', 0.0)
+    numero_invoice = di_data.get('numero_invoice')
+    peso_bruto = di_data.get('peso_bruto', 0.0)
+    peso_liquido = di_data.get('peso_liquido', 0.0)
+    cnpj_importador = di_data.get('cnpj_importador')
+    importador_nome = di_data.get('importador_nome')
+    recinto = di_data.get('recinto')
+    embalagem = di_data.get('embalagem')
+    quantidade_volumes = di_data.get('quantidade_volumes', 0)
+    acrescimo = di_data.get('acrescimo', 0.0)
+    imposto_importacao = di_data.get('imposto_importacao', 0.0)
+    armazenagem_db = di_data.get('armazenagem', 0.0)
+    frete_nacional_db = di_data.get('frete_nacional', 0.0)
+
 
     # --- Obter valores dos campos editáveis e labels ---
     # Lendo diretamente da chave do widget no session_state
-    try:
-        valor_nfs_float = float(st.session_state.fechamento_valor_nfs_input.replace('R$', '').replace('.', '').replace(',', '.').strip())
-    except ValueError:
-        valor_nfs_float = 0.0
-        logger.warning("Valor NFs inválido, usando 0.0 para cálculo.")
+    # MODIFICADO: Agora o valor_nfs_float pode vir do input ou do upload de XML
+    valor_nfs_float = 0.0
+    if 'fechamento_uploaded_nfs_total' in st.session_state and st.session_state.fechamento_uploaded_nfs_total > 0:
+        valor_nfs_float = st.session_state.fechamento_uploaded_nfs_total
+    else:
+        try:
+            valor_nfs_float = float(st.session_state.fechamento_valor_nfs_input.replace('R$', '').replace('.', '').replace(',', '.').strip())
+        except ValueError:
+            valor_nfs_float = 0.0
+            logger.warning("Valor NFs inválido, usando 0.0 para cálculo.")
     
     try:
         # Lendo diretamente da chave do widget no session_state
@@ -118,6 +184,7 @@ def perform_fechamento_calculations():
     st.session_state.fechamento_despachante_display = _format_currency(despachante_fixo)
     st.session_state.fechamento_connecta_display = _format_currency(connecta_fixo)
     st.session_state.fechamento_descarregamento_display = "R$ -" if descarregamento_fixo == 0 else _format_currency(descarregamento_fixo)
+    st.session_state.fechamento_taxas_destino_display = _format_currency(taxas_destino_calculado) # NOVO: Atualizado para refletir o valor calculado
     st.session_state.fechamento_icms_4_percent_display = _format_currency(icms_4_percent_fixo)
 
 
@@ -134,8 +201,8 @@ def perform_fechamento_calculations():
     diferenca_calculada = valor_nfs_float - total_nfs_calculado
     st.session_state.fechamento_diferenca_final_value = _format_currency(diferenca_calculada)
 
-    # Força a re-execução da página para atualizar os valores exibidos
-    st.rerun()
+    # Atualiza o campo de input do Valor NFs com o valor calculado ou o valor do XML
+    st.session_state.fechamento_valor_nfs_input = _format_currency(valor_nfs_float)
 
 
 def load_fechamento_di_data(declaracao_id):
@@ -148,26 +215,49 @@ def load_fechamento_di_data(declaracao_id):
         return
 
     logger.info(f"Carregando dados para DI ID (Fechamento): {declaracao_id}")
-    di_data_row = get_declaracao_by_id(declaracao_id)
+    di_data_dict = get_declaracao_by_id(declaracao_id) # Agora retorna um dicionário
 
-    if di_data_row:
-        di_data = tuple(di_data_row)
-        st.session_state.fechamento_di_data = di_data
+    if di_data_dict:
+        st.session_state.fechamento_di_data = di_data_dict # Armazena o dicionário diretamente
         
-        # Desempacota os dados (29 campos)
-        (id_db, numero_di, data_registro_db, valor_total_reais_xml,
-         arquivo_origem, data_importacao, informacao_complementar,
-         vmle, frete, seguro, vmld, ipi, pis_pasep, cofins, icms_sc,
-         taxa_cambial_usd, taxa_siscomex, numero_invoice, peso_bruto, peso_liquido,
-         cnpj_importador, importador_nome, recinto, embalagem, quantidade_volumes, acrescimo,
-         imposto_importacao, armazenagem_db, frete_nacional_db) = di_data
+        # Acessa os dados usando .get() para robustez e legibilidade
+        # Forneça um valor padrão (0.0 ou "N/A") caso a chave não exista, para evitar erros.
+        informacao_complementar = di_data_dict.get('informacao_complementar')
+        valor_total_reais_xml = di_data_dict.get('valor_total_reais_xml', 0.0)
+        acrescimo = di_data_dict.get('acrescimo', 0.0)
+        vmle = di_data_dict.get('vmle', 0.0)
+        frete = di_data_dict.get('frete', 0.0)
+        seguro = di_data_dict.get('seguro', 0.0)
+        vmld = di_data_dict.get('vmld', 0.0)
+        imposto_importacao = di_data_dict.get('imposto_importacao', 0.0)
+        ipi = di_data_dict.get('ipi', 0.0)
+        pis_pasep = di_data_dict.get('pis_pasep', 0.0)
+        cofins = di_data_dict.get('cofins', 0.0)
+        armazenagem_db = di_data_dict.get('armazenagem', 0.0)
+        frete_nacional_db = di_data_dict.get('frete_nacional', 0.0)
 
         st.session_state.fechamento_processo_ref = f"Processo : {informacao_complementar if informacao_complementar else 'N/A'}"
         
+        # NOVO: Tenta buscar o frete internacional pelo 'informacao_complementar'
+        frete_internacional_calculado_val = frete # Valor padrão é o frete da DI
+        if informacao_complementar and get_frete_internacional_by_referencia:
+            frete_data_from_db = get_frete_internacional_by_referencia(informacao_complementar)
+            if frete_data_from_db:
+                if frete_data_from_db['tipo_frete'] == 'Aéreo':
+                    frete_internacional_calculado_val = frete_data_from_db.get('total_aereo_brl', frete)
+                elif frete_data_from_db['tipo_frete'] == 'Marítimo':
+                    frete_internacional_calculado_val = frete_data_from_db.get('total_maritimo_brl', frete)
+                logger.info(f"Frete internacional carregado do DB para Fechamento: {frete_internacional_calculado_val}")
+            else:
+                logger.info(f"Nenhum frete internacional encontrado no DB para referência '{informacao_complementar}'. Usando o frete da DI.")
+
+
         # Inicializa os campos editáveis (agora usando as chaves dos widgets diretamente para consistência)
         st.session_state.fechamento_valor_nfs_input = _format_currency(0.00) # Inicializa a chave do widget
         st.session_state.fechamento_afrmm_input = _format_currency(0.00) # Inicializa a chave do widget
-        st.session_state.fechamento_frete_internacional_pago_input = _format_currency(frete) # Inicializa a chave do widget com o frete da DI
+        # NOVO: Preenche o campo 'frete_internacional_pago_input' com o valor do banco de frete internacional
+        st.session_state.fechamento_frete_internacional_pago_input = _format_currency(frete_internacional_calculado_val) 
+        st.session_state.fechamento_uploaded_nfs_total = 0.0 # Inicializa o total de NFs carregadas
 
         # Atualiza os labels da seção "Base de Cálculo"
         st.session_state.fechamento_valor_mercadoria_display = _format_currency(valor_total_reais_xml)
@@ -201,6 +291,7 @@ def clear_fechamento_di_data():
     st.session_state.fechamento_valor_nfs_input = _format_currency(0.00) # Limpa a chave do widget
     st.session_state.fechamento_afrmm_input = _format_currency(0.00) # Limpa a chave do widget
     st.session_state.fechamento_frete_internacional_pago_input = _format_currency(0.00) # Limpa a chave do widget
+    st.session_state.fechamento_uploaded_nfs_total = 0.0 # Limpa o total de NFs carregadas
 
     # Limpar valores de exibição
     st.session_state.fechamento_valor_mercadoria_display = "R$ 0,00"
@@ -292,7 +383,6 @@ def show_calculo_fechamento_page():
     set_background_image(background_image_path)
     # Define a imagem de fundo com a opacidade obtida de get_default_background_opacity()
     
-
 
     # Inicializa o estado da sessão para esta página
     if 'fechamento_di_data' not in st.session_state:
@@ -410,6 +500,26 @@ def show_calculo_fechamento_page():
             st.markdown(f"- **TOTAL NFS:** {st.session_state.fechamento_total_nfs_calculado_display}")
 
             st.markdown(f"- **Valor NFs:**")
+            # NOVO: Adiciona o uploader de arquivos XML
+            uploaded_files = st.file_uploader(
+                "Carregar XML(s) da NF",
+                type=["xml"],
+                accept_multiple_files=True,
+                key="fechamento_xml_uploader",
+                help="Faça upload de um ou mais arquivos XML de NF-e para preencher o campo 'Valor NFs'."
+            )
+
+            # Processa os arquivos XML carregados
+            total_vnf_from_xml = 0.0
+            if uploaded_files:
+                for uploaded_file in uploaded_files:
+                    xml_content = uploaded_file.read().decode("utf-8")
+                    vnf_value = parse_xml_for_vnf(xml_content)
+                    total_vnf_from_xml += vnf_value
+                st.session_state.fechamento_uploaded_nfs_total = total_vnf_from_xml
+                # Força o recálculo para atualizar o campo de input
+                perform_fechamento_calculations()
+            
             st.text_input(
                 "Valor NFs",
                 value=st.session_state.fechamento_valor_nfs_input,
@@ -425,3 +535,4 @@ def show_calculo_fechamento_page():
     if st.button("Voltar para Detalhes da DI", key="fechamento_voltar_di"):
         st.session_state.current_page = "Pagamentos"
         st.rerun()
+
