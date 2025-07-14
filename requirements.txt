@@ -6,4 +6,8 @@ oauth2client
 pandas 
 altair 
 numpy
+firebase_admin
+google-cloud-firestore
+weasyprint 
 pdfplumber
+pytz
