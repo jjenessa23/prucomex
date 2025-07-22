@@ -370,7 +370,7 @@ def _apply_in_memory_filters_cached(
         'Status_Geral': 'Sem Status',
         'Modal': 'Sem Modal',
         'Consolidado': 'Não',
-        'Status_Arquivado': 'Não Arquivado'
+        'Status_Arquivado': 'Não Arquivado', # Vírgula adicionada
         'Navio': 'Sem Navio'
     }
     
