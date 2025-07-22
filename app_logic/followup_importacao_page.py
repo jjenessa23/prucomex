@@ -371,6 +371,7 @@ def _apply_in_memory_filters_cached(
         'Modal': 'Sem Modal',
         'Consolidado': 'Não',
         'Status_Arquivado': 'Não Arquivado'
+        'Navio': 'Sem Navio'
     }
     
     # Aplica valores padrão em uma única operação
