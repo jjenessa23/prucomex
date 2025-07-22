@@ -119,6 +119,26 @@ from app_logic import db_utils # Importar db_utils aqui após a inicialização 
 
 st.markdown("""
 <style>
+/* REMOVE HEADER DO STREAMLIT */
+        header[data-testid="stHeader"] {
+            display: none !important;
+        }
+        div[data-testid="stDecoration"] {
+            display: none !important;
+        }
+        .main .block-container {
+            padding-top: 1rem !important;
+            margin-top: 0rem !important;
+        }
+        
+        /* Reset da sidebar para não ser afetada */
+        [data-testid="stSidebar"] {
+            background-color: inherit !important;
+            border: none !important;
+        }
+        [data-testid="stSidebar"] > div {
+            background-color: inherit !important;
+        }
 /* Oculta o botão de fullscreen que aparece ao passar o mouse sobre as imagens */
 button[title="View fullscreen"] {
     display: none !important;
