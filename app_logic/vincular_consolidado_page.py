@@ -1,5 +1,5 @@
 import streamlit as st
-from app_logic.vincular_utils import vincular_processos_consolidados, listar_grupos_consolidados, desvincular_processos_consolidados
+from app_logic.vincular_utils import vincular_processos_consolidados, listar_grupos_consolidados, desvincular_processos_consolidados, get_non_consolidated_modal_consolidado_processes
 from app_logic import db_utils # Importação adicionada
 import pandas as pd # Importação adicionada
 import logging # Importar logging para depuração
@@ -25,15 +25,30 @@ def show_vincular_consolidado_page(process_id=None):
     # Iniciar um conjunto para coletar todos os IDs de processos consolidados que são candidatos a serem opções.
     all_candidate_processes_for_options = set()
     
-    logger.debug(f"Estado de session_state.followup_processes_data_non_consolidated: {st.session_state.get('followup_processes_data_non_consolidated', 'Não encontrado')}")
+    # Carrega os processos não consolidados do Modal 'Consolidado' usando a nova função
+    st.session_state['followup_processes_data_non_consolidated'] = get_non_consolidated_modal_consolidado_processes()
+    
+    # --- Removendo a seção de DEBUG da UI ---
+    # st.subheader("Informações de Depuração (Verifique aqui!)")
+    # st.write(f"Processo Principal Selecionado: `{processo_principal_selecionado}`")
+    # 
+    # if 'followup_processes_data_non_consolidated' in st.session_state and st.session_state.followup_processes_data_non_consolidated:
+    #     st.write("Conteúdo de `st.session_state.followup_processes_data_non_consolidated` (após a chamada da função):")
+    #     for i, proc in enumerate(st.session_state['followup_processes_data_non_consolidated']):
+    #         proc_id_debug = proc.get('Processo_Novo') or proc.get('processo_novo') or proc.get('id')
+    #         modal_debug = proc.get('Modal', 'N/A')
+    #         consolidado_debug = proc.get('Consolidado', 'N/A')
+    #         status_arquivado_debug = proc.get('Status_Arquivado', 'N/A')
+    #         st.write(f"- Processo {i+1}: ID=`{proc_id_debug}`, Modal=`{modal_debug}`, Consolidado=`{consolidado_debug}`, Status_Arquivado=`{status_arquivado_debug}`")
+    # else:
+    #     st.write("`st.session_state.followup_processes_data_non_consolidated` está vazio ou não encontrado na sessão.")
+    # st.markdown("---") # Separador visual
+    # --- FIM DA SEÇÃO DE DEBUG TEMPORÁRIA ---
 
-    # Adicionar processos não consolidados que são do Modal 'Consolidado'
     if 'followup_processes_data_non_consolidated' in st.session_state and st.session_state.followup_processes_data_non_consolidated:
         for proc in st.session_state['followup_processes_data_non_consolidated']:
             proc_id = proc.get('Processo_Novo') or proc.get('processo_novo') or proc.get('id')
-            # MODIFICADO: Filtrar por 'Consolidado' em vez de 'LCL'
-            if proc.get('Modal', '').upper() == 'CONSOLIDADO':
-                all_candidate_processes_for_options.add(proc_id)
+            all_candidate_processes_for_options.add(proc_id)
         logger.debug(f"Processos não consolidados do Modal 'Consolidado' adicionados como opções: {all_candidate_processes_for_options}")
     else:
         logger.debug("Nenhum processo não consolidado encontrado ou lista vazia.")
@@ -42,9 +57,12 @@ def show_vincular_consolidado_page(process_id=None):
     principal_data = None
     if processo_principal_selecionado:
         try:
-            principal_data = db_utils.get_firestore_collection_ref("followup_processos").document(processo_principal_selecionado).get().to_dict()
-            if principal_data:
-                existing_linked_processes = principal_data.get("Processos_Vinculados", [])
+            principal_doc = db_utils.get_firestore_collection_ref("followup_processos").document(processo_principal_selecionado).get()
+            if principal_doc.exists:
+                principal_data = principal_doc.to_dict()
+                # Correção para TypeError: 'NoneType' object is not iterable
+                # Garante que existing_linked_processes seja sempre uma lista, mesmo se o valor no Firestore for None
+                existing_linked_processes = principal_data.get("Processos_Vinculados") or [] 
                 logger.debug(f"Processos já vinculados ao principal '{processo_principal_selecionado}': {existing_linked_processes}")
                 # Garante que todos os processos já vinculados (que serão no 'default') também estejam nas opções
                 for linked_pid in existing_linked_processes:
@@ -68,12 +86,14 @@ def show_vincular_consolidado_page(process_id=None):
     filtered_default_values = [pid for pid in existing_linked_processes if pid in processos_disponiveis_para_selecao]
     logger.debug(f"Valores padrão filtrados para o multiselect: {filtered_default_values}")
 
+    # Inicializa 'selecionados' antes do multiselect para evitar NameError
+    selecionados = [] 
     selecionados = st.multiselect(
-        "Processos para vincular (Modal Consolidado):", # MODIFICADO: Atualizado o label do multiselect
+        "Processos para vincular (Modal Consolidado):", # Atualizado o label do multiselect
         options=processos_disponiveis_para_selecao,
         default=filtered_default_values,
-        placeholder="Nenhum processo Consolidado disponível para vincular." if not processos_disponiveis_para_selecao else "Selecione processos...", # MODIFICADO: Atualizado o placeholder
-        help="Selecione processos Consolidado a serem vinculados ao processo principal." # MODIFICADO: Atualizado o help text
+        placeholder="Nenhum processo Consolidado disponível para vincular." if not processos_disponiveis_para_selecao else "Selecione processos...", # Atualizado o placeholder
+        help="Selecione processos Consolidado a serem vinculados ao processo principal." # Atualizado o help text
     )
 
     if st.button("Vincular/Atualizar"):
@@ -134,11 +154,16 @@ def show_vincular_consolidado_page(process_id=None):
             if selected_groups_for_unlinking:
                 process_ids_to_unlink = []
                 for group_name_to_unlink in selected_groups_for_unlinking:
-                    for group_info in consolidated_table_data:
-                        if group_info["Grupo Principal"] == group_name_to_unlink:
-                            process_ids_to_unlink.extend(group_info["IDs des Membros"]) # Corrigido aqui
-                            break
-                
+                    # Encontra o grupo correspondente na lista 'grupos' original
+                    # para acessar os 'members_ids' sem depender do DataFrame do data_editor
+                    found_group = next((g for g in grupos if g['principal_id'] == group_name_to_unlink), None)
+                    
+                    if found_group and 'members_ids' in found_group:
+                        process_ids_to_unlink.extend(found_group["members_ids"])
+                    else:
+                        st.error(f"Erro: Grupo '{group_name_to_unlink}' não encontrado ou 'members_ids' ausente na estrutura original.")
+                        logger.error(f"Erro: Grupo '{group_name_to_unlink}' não encontrado ou 'members_ids' ausente na estrutura original: {found_group}")
+                        
                 if process_ids_to_unlink:
                     process_ids_to_unlink = list(set(process_ids_to_unlink))
                     if desvincular_processos_consolidados(process_ids_to_unlink):

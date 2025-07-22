@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Tuple
 import streamlit as st
 from app_logic import db_utils
 import logging
+from google.cloud.firestore_v1.base_query import FieldFilter # Importar FieldFilter
 
 logger = logging.getLogger(__name__)
 
@@ -158,8 +159,8 @@ def listar_grupos_consolidados() -> List[Dict[str, Any]]:
         # Adiciona também a condição para não buscar os que estão 'Status_Arquivado' == 'Arquivado'
         # ou se 'Status_Arquivado' campo não existe / é None / é 'Não Arquivado'
         # (Para garantir que apenas grupos ativos sejam listados para desvinculação na UI)
-        query = processos_ref.where("Consolidado", "==", "Sim") \
-                             .where("Status_Arquivado", "in", [None, "Não Arquivado"])
+        query = processos_ref.where(filter=FieldFilter("Consolidado", "==", "Sim")) \
+                             .where(filter=FieldFilter("Status_Arquivado", "in", [None, "Não Arquivado"]))
         
         for doc in query.stream():
             data = doc.to_dict()
@@ -202,3 +203,54 @@ def listar_grupos_consolidados() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.exception(f"Erro ao listar grupos consolidados: {e}")
         return []
+
+def get_non_consolidated_modal_consolidado_processes() -> List[Dict[str, Any]]:
+    '''
+    Busca no Firestore todos os processos que NÃO estão consolidados (Consolidado != 'Sim')
+    e que possuem o campo 'Modal' como 'Consolidado'.
+    '''
+    processos_ref = db_utils.get_firestore_collection_ref("followup_processos")
+    if not processos_ref:
+        logger.error("Não foi possível acessar a coleção de processos para buscar não consolidados.")
+        return []
+
+    non_consolidated_processes = []
+    try:
+        logger.debug("Iniciando busca por processos não consolidados do Modal 'Consolidado'...")
+        # Busca todos os documentos da coleção
+        docs = processos_ref.stream()
+        
+        found_docs_count = 0
+        for doc in docs:
+            found_docs_count += 1
+            data = doc.to_dict()
+            data['id'] = doc.id # Adiciona o ID do documento aos dados
+            
+            # Log dos dados de cada documento para depuração
+            logger.debug(f"Processando documento: ID={data.get('id')}, Modal={data.get('Modal')}, Consolidado={data.get('Consolidado')}, Status_Arquivado={data.get('Status_Arquivado')}")
+
+            # Filtra os processos:
+            # 1. Não estão marcados como "Consolidado": "Sim" (ou o campo não existe/é diferente)
+            # 2. Têm o campo "Modal" como "Consolidado" (case-insensitive)
+            # 3. Não estão arquivados (Status_Arquivado não é 'Arquivado' ou não existe)
+            
+            # Correção para o AttributeError: 'NoneType' object has no attribute 'upper'
+            modal_value = data.get('Modal')
+            is_modal_consolidado = (modal_value or '').upper() == 'CONSOLIDADO'
+            
+            is_not_consolidated = data.get('Consolidado') != 'Sim'
+            is_not_archived = data.get('Status_Arquivado') != 'Arquivado' and data.get('Status_Arquivado') is not None # Explicitamente verifica None também
+
+            if is_modal_consolidado and is_not_consolidated and is_not_archived:
+                non_consolidated_processes.append(data)
+                logger.debug(f"Adicionado: ID={data.get('id')}")
+            else:
+                logger.debug(f"Filtrado: ID={data.get('id')}. Condições: Modal Consolidado={is_modal_consolidado}, Não Consolidado={is_not_consolidated}, Não Arquivado={is_not_archived}")
+        
+        logger.debug(f"Total de documentos processados: {found_docs_count}")
+        logger.debug(f"Processos não consolidados do Modal 'Consolidado' encontrados (final): {[p.get('Processo_Novo') or p.get('id') for p in non_consolidated_processes]}")
+        return non_consolidated_processes
+    except Exception as e:
+        logger.exception(f"Erro ao buscar processos não consolidados do Modal 'Consolidado': {e}")
+        return []
+

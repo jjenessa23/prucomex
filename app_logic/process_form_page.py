@@ -14,7 +14,69 @@ import numpy as np
 import base64
 import re
 import uuid
+# Removido: import pdfplumber # Importar pdfplumber
+
+# Importar db_manager explicitamente no início
 import followup_db_manager as db_manager
+
+# Importar função para buscar cotação do dólar
+try:
+    from app_logic.utils import get_dolar_cotacao
+    from app_logic import db_utils
+except ImportError:
+    get_dolar_cotacao = None
+    db_utils = None
+
+# Configuração do logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG) # Manter DEBUG para logs detalhados durante o desenvolvimento
+
+# --- Função para obter cotação atual do dólar PTAX Venda ---
+def get_current_dolar_ptax_venda():
+    """
+    Obtém a cotação atual do dólar PTAX Venda.
+    Primeiro tenta da API, depois do banco de dados, finalmente usa valor padrão.
+    """
+    try:
+        # Valor padrão caso não consiga obter de nenhuma fonte
+        default_value = 5.50
+        
+        # Primeiro tenta da API
+        if get_dolar_cotacao:
+            try:
+                dolar_data_api = get_dolar_cotacao()
+                if dolar_data_api and isinstance(dolar_data_api, dict) and 'ptax_venda' in dolar_data_api:
+                    ptax_venda_str = dolar_data_api['ptax_venda']
+                    if ptax_venda_str and str(ptax_venda_str).strip() != 'N/A':
+                        # Converte string com vírgula para float
+                        ptax_value = float(str(ptax_venda_str).replace(',', '.'))
+                        if ptax_value > 0:  # Verifica se é um valor válido
+                            logger.info(f"[get_current_dolar_ptax_venda] Obtido da API: {ptax_value}")
+                            return ptax_value
+            except Exception as api_error:
+                logger.warning(f"[get_current_dolar_ptax_venda] Erro na API: {api_error}")
+        
+        # Se não conseguiu da API, tenta do banco de dados
+        if db_utils and hasattr(db_utils, 'get_latest_dolar_cotacao_from_db'):
+            try:
+                latest_cotacoes = db_utils.get_latest_dolar_cotacao_from_db()
+                if latest_cotacoes and isinstance(latest_cotacoes, dict) and 'ptax_venda' in latest_cotacoes:
+                    db_entry = latest_cotacoes['ptax_venda']
+                    if isinstance(db_entry, dict) and 'valor' in db_entry:
+                        ptax_value = float(db_entry['valor'])
+                        if ptax_value > 0:  # Verifica se é um valor válido
+                            logger.info(f"[get_current_dolar_ptax_venda] Obtido do banco: {ptax_value}")
+                            return ptax_value
+            except Exception as db_error:
+                logger.warning(f"[get_current_dolar_ptax_venda] Erro no banco: {db_error}")
+        
+        # Valor padrão se não conseguir obter de nenhuma fonte
+        logger.warning(f"[get_current_dolar_ptax_venda] Usando valor padrão: {default_value}")
+        return default_value
+        
+    except Exception as e:
+        logger.error(f"[get_current_dolar_ptax_venda] Erro geral: {e}")
+        return 5.50  # Valor padrão em caso de erro
 
 # Configuração do logger
 logger = logging.getLogger(__name__)
@@ -95,45 +157,59 @@ class MockDbUtils:
 
     def get_ncm_item_by_ncm_code(self, ncm_code: str) -> Optional[dict]:
         """Função mock para simulação de obtenção de dados NCM por código."""
-        if ncm_code == "85171231":
-            return {
-                'ncm_code': '85171231', 'descricao_item': 'Telefones celulares',
-                'ii_aliquota': 16.0, 'ipi_aliquota': 5.0, 'pis_aliquota': 1.65,
-                'cofins_aliquota': 7.6, 'icms_aliquota': 18.0
-            }
-        return None
+        # Adicionando alguns NCMs de exemplo para teste
+        ncm_data = {
+            "85171231": {'ncm_code': '85171231', 'descricao_item': 'Telefones celulares', 'ii_aliquota': 16.0, 'ipi_aliquota': 5.0, 'pis_aliquota': 1.65, 'cofins_aliquota': 7.6, 'icms_aliquota': 18.0},
+            "84713012": {'ncm_code': '84713012', 'descricao_item': 'Notebooks', 'ii_aliquota': 10.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 1.65, 'cofins_aliquota': 7.6, 'icms_aliquota': 18.0},
+            "9403890": {'ncm_code': '9403890', 'descricao_item': 'Móveis de metal, uso doméstico', 'ii_aliquota': 10.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 1.65, 'cofins_aliquota': 7.6, 'icms_aliquota': 18.0},
+            # Adicione mais NCMs conforme necessário para seus testes
+        }
+        return ncm_data.get(ncm_code)
 
     def selecionar_todos_ncm_itens(self) -> List[Dict[str, Any]]:
         """Função mock para simulação de obtenção de todos os itens NCM."""
         return [
             {'ID': 1, 'ncm_code': '85171231', 'descricao_item': 'Telefones celulares', 'ii_aliquota': 16.0, 'ipi_aliquota': 5.0, 'pis_aliquota': 1.65, 'cofins_aliquota': 7.6, 'icms_aliquota': 18.0},
             {'ID': 2, 'ncm_code': '84713012', 'descricao_item': 'Notebooks', 'ii_aliquota': 10.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 1.65, 'cofins_aliquota': 7.6, 'icms_aliquota': 18.0},
+            {'ID': 3, 'ncm_code': '9403890', 'descricao_item': 'Móveis de metal, uso doméstico', 'ii_aliquota': 10.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 1.65, 'cofins_aliquota': 7.6, 'icms_aliquota': 18.0},
         ]
+    
+    def search_ncm_by_description(self, description: str) -> Optional[Dict[str, Any]]:
+        """Função mock para simulação de busca de NCM por descrição."""
+        description_lower = description.lower()
+        if "mesa" in description_lower:
+            return {'ncm_code': '9403890', 'descricao_item': 'Móveis de metal, uso doméstico'}
+        elif "celular" in description_lower:
+            return {'ncm_code': '85171231', 'descricao_item': 'Telefones celulares'}
+        return None
+
 
 # Importa db_utils real, ou usa o mock se houver erro
-db_utils: Union[Any, MockDbUtils] 
+db_utils: Union[Any, MockDbUtils] = MockDbUtils() # Inicializa com o mock por padrão
 try:
-    import db_utils # type: ignore
-    # Verifica se as funções esperadas existem no db_utils real
-    if not all(hasattr(db_utils, func) for func in [
+    import db_utils as real_db_utils # Importa com um alias para evitar sombreamento
+    # Verifica se o db_utils real tem as funções esperadas
+    if all(hasattr(real_db_utils, func) for func in [
         'get_declaracao_by_id', 'get_declaracao_by_referencia', 
-        'get_ncm_item_by_ncm_code', 'selecionar_todos_ncm_itens'
+        'get_ncm_item_by_ncm_code', 'selecionar_todos_ncm_itens',
+        'search_ncm_by_description'
     ]):
-        raise ImportError("db_utils real não contém todas as funções esperadas.")
+        db_utils = real_db_utils # Usa o real se for válido
+        logger.info("db_utils.py: Real db_utils importado e validado.")
+    else:
+        logger.warning("db_utils.py: Real db_utils encontrado mas incompleto. Usando MockDbUtils.")
 except ImportError:
-    db_utils = MockDbUtils()
-    logger.warning("Módulo 'db_utils' não encontrado ou incompleto. Usando MockDbUtils.")
+    logger.warning("Módulo 'db_utils' não encontrado. Usando MockDbUtils.")
 except Exception as e:
-    db_utils = MockDbUtils() 
-    logger.error(f"Erro ao importar ou inicializar 'db_utils': {e}. Usando MockDbUtils.")
+    logger.error(f"db_utils.py: Erro ao importar ou inicializar 'db_utils': {e}. Usando MockDbUtils.")
 
 # Importar pdf_analyzer_page.py e ncm_list_page para reuso de funções
 pdf_analyzer_page = None
 try:
     from app_logic import pdf_analyzer_page
-    import pdfplumber
+    # pdfplumber já importado no topo
 except ImportError:
-    logger.warning("Módulo 'pdf_analyzer_page' ou 'pdfplumber' não encontrado. Funções de análise de PDF não estarão disponíveis.")
+    logger.warning("Módulo 'pdf_analyzer_page' não encontrado. Funções de análise de PDF não estarão disponíveis.")
 
 ncm_list_page = None
 try:
@@ -165,51 +241,69 @@ def _get_di_number_from_id(di_id: Optional[int]) -> str:
 # --- Funções de Cálculo de Impostos ---
 @st.cache_data(ttl=3600) # Cache de 1 hora para dados NCM
 def get_ncm_taxes(ncm_code: str) -> Dict[str, float]:
-    """Busca as alíquotas de impostos para um dado NCM."""
+    """
+    Busca as alíquotas de impostos para um dado NCM diretamente do Firestore.
+    Sempre retorna as alíquotas mais atualizadas da coleção 'ncm_impostos_items'.
+    """
     if not ncm_code:
+        logger.warning(f"[get_ncm_taxes] NCM code vazio ou None fornecido")
         return {'ii_aliquota': 0.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 0.0, 'cofins_aliquota': 0.0, 'icms_aliquota': 0.0}
-    ncm_data_raw = db_utils.get_ncm_item_by_ncm_code(ncm_code)
+    
+    # Garante que o NCM está limpo (apenas dígitos)
+    ncm_code_clean = re.sub(r'\D', '', str(ncm_code))
+    if not ncm_code_clean:
+        logger.warning(f"[get_ncm_taxes] NCM code após limpeza resultou vazio: {ncm_code}")
+        return {'ii_aliquota': 0.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 0.0, 'cofins_aliquota': 0.0, 'icms_aliquota': 0.0}
+    
+    logger.info(f"[get_ncm_taxes] Buscando alíquotas para NCM: {ncm_code_clean}")
+    
+    # Busca diretamente no Firestore
+    ncm_data_raw = db_utils.get_ncm_item_by_ncm_code(ncm_code_clean)
     ncm_data = dict(ncm_data_raw) if ncm_data_raw else None
 
     if ncm_data:
-        return {
-            'ii_aliquota': ncm_data.get('ii_aliquota', 0.0),
-            'ipi_aliquota': ncm_data.get('ipi_aliquota', 0.0),
-            'pis_aliquota': ncm_data.get('pis_aliquota', 0.0),
-            'cofins_aliquota': ncm_data.get('cofins_aliquota', 0.0),
-            'icms_aliquota': ncm_data.get('icms_aliquota', 0.0)
+        taxes = {
+            'ii_aliquota': float(ncm_data.get('ii_aliquota', 0.0)),
+            'ipi_aliquota': float(ncm_data.get('ipi_aliquota', 0.0)),
+            'pis_aliquota': float(ncm_data.get('pis_aliquota', 0.0)),
+            'cofins_aliquota': float(ncm_data.get('cofins_aliquota', 0.0)),
+            'icms_aliquota': float(ncm_data.get('icms_aliquota', 0.0))
         }
-    return {'ii_aliquota': 0.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 0.0, 'cofins_aliquota': 0.0, 'icms_aliquota': 0.0}
+        logger.info(f"[get_ncm_taxes] Alíquotas encontradas para NCM {ncm_code_clean}: II={taxes['ii_aliquota']}%, IPI={taxes['ipi_aliquota']}%, PIS={taxes['pis_aliquota']}%, COFINS={taxes['cofins_aliquota']}%, ICMS={taxes['icms_aliquota']}%")
+        return taxes
+    else:
+        logger.warning(f"[get_ncm_taxes] NCM {ncm_code_clean} não encontrado no Firestore. Usando alíquotas zeradas.")
+        return {'ii_aliquota': 0.0, 'ipi_aliquota': 0.0, 'pis_aliquota': 0.0, 'cofins_aliquota': 0.0, 'icms_aliquota': 0.0}
 
 def calculate_item_taxes_and_values(item: Dict[str, Any], dolar_brl: float, total_invoice_value_usd: float, total_invoice_weight_kg: float, estimativa_frete_usd: float, estimativa_seguro_brl: float) -> Dict[str, Any]:
     """
     Calcula o VLMD, impostos e rateios para um item individual.
+    Sempre busca as alíquotas mais atualizadas do Firestore.
     Retorna o item com os campos de impostos atualizados e valores rateados.
     """
     item_qty = float(item.get('Quantidade', 0))
     item_unit_value_usd = float(item.get('Valor Unitário', 0))
     item_value_usd = item_qty * item_unit_value_usd
-    
-    # Certifique-se de que 'Peso Unitário' é um float e lida com None/NaN
-    item_unit_weight_kg = float(item.get('Peso Unitário', 0.0) if item.get('Peso Unitário') is not None else 0.0)
-    item_weight_kg = item_qty * item_unit_weight_kg
 
     # Para evitar divisão por zero, use max(1, ...)
     value_ratio = item_value_usd / max(1, total_invoice_value_usd)
-    weight_ratio = item_weight_kg / max(1, total_invoice_weight_kg)
+    # Como removemos Peso Unitário, usamos apenas o rateio por valor
+    weight_ratio = value_ratio
 
     # Rateio de frete e seguro
     frete_rateado_usd = estimativa_frete_usd * value_ratio
     seguro_rateado_brl = estimativa_seguro_brl * weight_ratio
 
-    # NCM e impostos
+    # NCM e impostos - SEMPRE busca as alíquotas atualizadas do Firestore
     ncm_code = str(item.get('NCM', ''))
-    ncm_taxes = get_ncm_taxes(ncm_code) # Usa a função cacheada
+    ncm_taxes = get_ncm_taxes(ncm_code)  # Busca sempre as alíquotas atualizadas
+    
+    logger.info(f"[calculate_item_taxes_and_values] Calculando impostos para item NCM {ncm_code}, alíquotas: II={ncm_taxes['ii_aliquota']}%, IPI={ncm_taxes['ipi_aliquota']}%, PIS={ncm_taxes['pis_aliquota']}%, COFINS={ncm_taxes['cofins_aliquota']}%, ICMS={ncm_taxes['icms_aliquota']}%")
 
     # VLMD_Item (Valor da Mercadoria no Local de Desembaraço)
     vlmd_item = (item_unit_value_usd * item_qty * dolar_brl) + (frete_rateado_usd * dolar_brl) + seguro_rateado_brl
     
-    # Cálculos de impostos
+    # Cálculos de impostos usando as alíquotas atualizadas
     item['Estimativa_II_BR'] = vlmd_item * (ncm_taxes['ii_aliquota'] / 100)
     item['Estimativa_IPI_BR'] = (vlmd_item + item['Estimativa_II_BR']) * (ncm_taxes['ipi_aliquota'] / 100)
     item['Estimativa_PIS_BR'] = vlmd_item * (ncm_taxes['pis_aliquota'] / 100)
@@ -219,6 +313,8 @@ def calculate_item_taxes_and_values(item: Dict[str, Any], dolar_brl: float, tota
     item['VLMD_Item'] = vlmd_item
     item['Frete_Rateado_USD'] = frete_rateado_usd
     item['Seguro_Rateado_BRL'] = seguro_rateado_brl
+
+    logger.info(f"[calculate_item_taxes_and_values] Impostos calculados: II=R${item['Estimativa_II_BR']:.2f}, IPI=R${item['Estimativa_IPI_BR']:.2f}, PIS=R${item['Estimativa_PIS_BR']:.2f}, COFINS=R${item['Estimativa_COFINS_BR']:.2f}, ICMS=R${item['Estimativa_ICMS_BR']:.2f}")
 
     return item
 
@@ -411,7 +507,7 @@ def _save_process_action(process_id_from_form_load: Optional[Any], edited_data: 
                     try:
                         # Garante que os campos numéricos sejam convertidos corretamente para o DB
                         item_to_insert = item.copy()
-                        for k_num in ['Quantidade', 'Peso Unitário', 'Valor Unitário', 'Valor total do item',
+                        for k_num in ['Quantidade', 'Valor Unitário', 'Valor total do item',
                                       'Estimativa_II_BR', 'Estimativa_IPI_BR', 'Estimativa_PIS_BR',
                                       'Estimativa_COFINS_BR', 'Estimativa_ICMS_BR', 'Frete_Rateado_USD',
                                       'Seguro_Rateado_BRL', 'VLMD_Item']:
@@ -431,7 +527,7 @@ def _save_process_action(process_id_from_form_load: Optional[Any], edited_data: 
                             cobertura=item_to_insert.get('Cobertura'),
                             sku=item_to_insert.get('SKU'),
                             quantidade=item_to_insert.get('Quantidade'),
-                            peso_unitario=item_to_insert.get('Peso Unitário'),
+                            peso_unitario=0.0,  # Valor padrão já que removemos o campo
                             valor_unitario=item_to_insert.get('Valor Unitário'),
                             valor_total_item=item_to_insert.get('Valor total do item'),
                             estimativa_ii_br=item_to_insert.get('Estimativa_II_BR'),
@@ -492,8 +588,8 @@ def _save_process_action(process_id_from_form_load: Optional[Any], edited_data: 
 
 # --- Esquema Padrão para Itens ---
 DEFAULT_ITEM_SCHEMA = {
-    "Código Interno": None, "NCM": None, "Cobertura": "NÃO", "SKU": None,
-    "Quantidade": 0, "Peso Unitário": 0.0, "Valor Unitário": 0.0,
+    "Código Interno": None, "NCM": None, "Cobertura": "SIM", "SKU": None,
+    "Quantidade": 0, "Valor Unitário": 0.0,
     "Valor total do item": 0.0, "Estimativa_II_BR": 0.0, "Estimativa_IPI_BR": 0.0,
     "Estimativa_PIS_BR": 0.0, "Estimativa_COFINS_BR": 0.0, "Estimativa_ICMS_BR": 0.0,
     "Frete_Rateado_USD": 0.0, "Seguro_Rateado_BRL": 0.0, "VLMD_Item": 0.0,
@@ -517,7 +613,7 @@ def _standardize_item_data(item_dict: Any, fornecedor: Optional[str] = None, inv
     # Mapeamento de chaves snake_case do DB para chaves 'Capitalized With Spaces' do schema/display
     db_to_schema_map = {
         "codigo_interno": "Código Interno", "ncm": "NCM", "cobertura": "Cobertura", "sku": "SKU",
-        "quantidade": "Quantidade", "peso_unitario": "Peso Unitário", "valor_unitario": "Valor Unitário",
+        "quantidade": "Quantidade", "valor_unitario": "Valor Unitário",
         "valor_total_item": "Valor total do item", "estimativa_ii_br": "Estimativa_II_BR",
         "estimativa_ipi_br": "Estimativa_IPI_BR", "estimativa_pis_br": "Estimativa_PIS_BR",
         "estimativa_cofins_br": "Estimativa_COFINS_BR", "estimativa_icms_br": "Estimativa_ICMS_BR",
@@ -538,19 +634,13 @@ def _standardize_item_data(item_dict: Any, fornecedor: Optional[str] = None, inv
         if key not in standardized_item and key in item_dict:
             standardized_item[key] = item_dict[key]
 
-    # Lida com Fornecedor e Invoice N#
-    if fornecedor is not None:
-        standardized_item['Fornecedor'] = fornecedor
-    if invoice_n is not None:
-        standardized_item['Invoice N#'] = invoice_n
-
     # Converte tipos para garantir compatibilidade
     for k, v in standardized_item.items():
         if k in ["Quantidade"]:
             # Converte para numérico, se for NaN, vira 0, então para int
             numeric_val = pd.to_numeric(v, errors='coerce')
             standardized_item[k] = int(numeric_val if not pd.isna(numeric_val) else 0)
-        elif k in ["Peso Unitário", "Valor Unitário", "Valor total do item",
+        elif k in ["Valor Unitário", "Valor total do item",
                    "Estimativa_II_BR", "Estimativa_IPI_BR", "Estimativa_PIS_BR",
                    "Estimativa_COFINS_BR", "Estimativa_ICMS_BR", "Frete_Rateado_USD",
                    "Seguro_Rateado_BRL", "VLMD_Item"]:
@@ -562,237 +652,125 @@ def _standardize_item_data(item_dict: Any, fornecedor: Optional[str] = None, inv
     
     return standardized_item
 
-def _import_items_from_excel(uploaded_file: Any, current_fornecedor_context: str, current_invoice_n_context: str) -> bool:
+def _extract_items_from_excel_or_csv(uploaded_file: Any) -> List[Dict[str, Any]]:
     """
-    Importa itens de um arquivo Excel/CSV local e os adiciona à lista de itens do processo.
+    Extrai dados de itens de uma tabela em um arquivo Excel (.xlsx) ou CSV.
+    Adapta a leitura com base na extensão do arquivo.
     """
+    items_from_file = []
     if uploaded_file is None:
-        return False
-
-    file_extension = os.path.splitext(uploaded_file.name)[1]
-    df = None
+        return items_from_file
 
     try:
-        if file_extension.lower() == '.csv':
-            try: df = pd.read_csv(uploaded_file, encoding='utf-8')
-            except UnicodeDecodeError: df = pd.read_csv(uploaded_file, encoding='latin-1')
-            except Exception: df = pd.read_csv(uploaded_file, sep=';')
-        elif file_extension.lower() in ('.xlsx', '.xls'):
-            df = pd.read_excel(uploaded_file)
+        file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+        df = None
+
+        if file_extension == '.csv':
+            # Para CSV, assume que o cabeçalho está na primeira linha (index 0)
+            df = pd.read_csv(uploaded_file, sep=',', quotechar='"', dtype=str)
+        elif file_extension == '.xlsx':
+            # Para XLSX, tenta ler o cabeçalho a partir da 7ª linha (index 6)
+            df = pd.read_excel(uploaded_file, header=6, dtype=str) 
         else:
-            _display_message_box("Formato de arquivo não suportado. Por favor, use .csv, .xls ou .xlsx.", "error")
-            return False
+            _display_message_box("Formato de arquivo não suportado. Por favor, faça upload de um arquivo CSV ou XLSX.", "error")
+            return items_from_file
 
-        if df.empty:
-            _display_message_box("O arquivo importado está vazio.", "warning")
-            return False
+        # Limpar nomes das colunas: remover quebras de linha e espaços extras
+        # Garante que 'col' é uma string antes de chamar replace()
+        df.columns = [str(col).replace('\n', ' ').strip() if col is not None else '' for col in df.columns]
 
-        column_mapping_excel_to_internal = {
-            "Cobertura": "Cobertura", "Codigo interno": "Código Interno",
-            "Denominação": "Denominação do produto", "SKU": "SKU",
-            "Quantidade": "Quantidade", "Preço": "Valor Unitário", "NCM": "NCM",
-            "Peso Unitário": "Peso Unitário" # Adicionado ao mapeamento para o template de itens
+        # Mapeamento dos cabeçalhos do arquivo para as chaves internas
+        col_mapping_keywords = {
+            "Código Interno": ["Código"],
+            "SKU": ["Cód.Fabricante"],
+            "Quantidade": ["Quant. Und", "Quant."], 
+            "Denominação do produto": ["Descrição"],
+            "NCM": ["NCM"],
+            "Valor Unitário": ["Valor Unit."],
         }
+
+        # Encontra os nomes reais das colunas no DataFrame
+        col_names_in_df = {}
+        for internal_key, keywords in col_mapping_keywords.items():
+            found_col = None
+            for keyword in keywords:
+                # Procura por correspondência exata ou parcial (contém)
+                matching_cols = [col for col in df.columns if keyword.lower() in col.lower()]
+                if matching_cols:
+                    found_col = matching_cols[0] 
+                    break
+            col_names_in_df[internal_key] = found_col
         
-        df_renamed = df.rename(columns=column_mapping_excel_to_internal, errors='ignore')
+        # Verifica se todas as colunas essenciais foram encontradas
+        essential_cols = ["Código Interno", "SKU", "Quantidade", "Denominação do produto", "NCM", "Valor Unitário"]
+        if any(col_names_in_df[key] is None for key in essential_cols):
+            logger.warning(f"Cabeçalhos essenciais não encontrados no arquivo. Ignorando. Colunas encontradas: {df.columns.tolist()}")
+            _display_message_box("Não foi possível encontrar todas as colunas essenciais no arquivo. Verifique o formato do cabeçalho.", "error")
+            return items_from_file
 
-        # Converte apenas colunas numéricas que existem
-        numeric_cols_to_convert = ["Quantidade", "Valor Unitário", "Peso Unitário"]
-        for col in numeric_cols_to_convert:
-            if col in df_renamed.columns:
-                df_renamed[col] = pd.to_numeric(df_renamed[col], errors='coerce').fillna(0).astype(float)
-
-        new_items_from_file = []
-        for index, row in df_renamed.iterrows():
-            item_data = row.to_dict()
-            if 'NCM' in item_data and item_data['NCM'] is not None:
-                item_data['NCM'] = re.sub(r'\D', '', str(item_data['NCM'])) # Limpa NCM para ter apenas dígitos
-            #
-            standardized_item = _standardize_item_data(item_data, current_fornecedor_context, current_invoice_n_context)
+        # Iterar sobre as linhas do DataFrame
+        for index, row in df.iterrows():
+            item_data = {}
             
-            if not isinstance(standardized_item, dict):
-                logger.error(f"CRITICAL ERROR: _standardize_item_data returned non-dict (type {type(standardized_item)}) for row {index}. Skipping this item.")
-                continue
-
-            qty = standardized_item.get('Quantidade', 0)
-            unit_val = standardized_item.get('Valor Unitário', 0.0)
-            standardized_item["Valor total do item"] = qty * unit_val
+            # Extrai os dados usando os nomes das colunas mapeados, tratando None
+            # Garante que os valores da linha são strings antes de processar
+            item_data["Código Interno"] = str(row[col_names_in_df["Código Interno"]]) if col_names_in_df["Código Interno"] and pd.notna(row[col_names_in_df["Código Interno"]]) else None
+            item_data["SKU"] = str(row[col_names_in_df["SKU"]]) if col_names_in_df["SKU"] and pd.notna(row[col_names_in_df["SKU"]]) else None
+            item_data["Quantidade"] = str(row[col_names_in_df["Quantidade"]]) if col_names_in_df["Quantidade"] and pd.notna(row[col_names_in_df["Quantidade"]]) else None
+            item_data["Denominação do produto"] = str(row[col_names_in_df["Denominação do produto"]]) if col_names_in_df["Denominação do produto"] and pd.notna(row[col_names_in_df["Denominação do produto"]]) else None
+            item_data["NCM"] = str(row[col_names_in_df["NCM"]]) if col_names_in_df["NCM"] and pd.notna(row[col_names_in_df["NCM"]]) else None
             
-            new_items_from_file.append(standardized_item)
-        
-        # Substitui a lista de itens existente pelos itens importados
-        st.session_state.process_items_data = [] 
-        st.session_state.process_items_data.extend(new_items_from_file)
-        
-        _display_message_box(f"{len(new_items_from_file)} itens importados com sucesso do arquivo!", "success")
-        return True
+            # Para "Valor Unitário", extrair o primeiro número float da string
+            raw_valor_unitario = str(row[col_names_in_df["Valor Unitário"]]) if col_names_in_df["Valor Unitário"] and pd.notna(row[col_names_in_df["Valor Unitário"]]) else None
+            if raw_valor_unitario:
+                # Usa regex para encontrar o primeiro número que pode ter vírgula como separador decimal
+                match = re.search(r'(\d[\d,.]*)', raw_valor_unitario)
+                if match:
+                    # Substitui vírgula por ponto e converte para float
+                    item_data["Valor Unitário"] = float(match.group(1).replace(',', '.'))
+                else:
+                    item_data["Valor Unitário"] = 0.0
+            else:
+                item_data["Valor Unitário"] = 0.0
 
+            # Limpeza e conversão de tipos para os demais campos
+            # Quantidade: remover não-dígitos e converter para int
+            item_data["Quantidade"] = int(re.sub(r'\D', '', str(item_data["Quantidade"]))) if item_data["Quantidade"] else 0
+            # NCM: remover não-dígitos
+            item_data["NCM"] = re.sub(r'\D', '', str(item_data["NCM"])) if item_data["NCM"] else None
+            
+            # --- Automação da busca de NCM/Descrição ---
+            if item_data.get('NCM'):
+                ncm_info = db_utils.get_ncm_item_by_ncm_code(item_data['NCM'])
+                if ncm_info:
+                    item_data['Denominação do produto'] = ncm_info.get('descricao_item', item_data.get('Denominação do produto'))
+            elif item_data.get('Denominação do produto'):
+                ncm_info_by_desc = db_utils.search_ncm_by_description(item_data['Denominação do produto'])
+                if ncm_info_by_desc:
+                    item_data['NCM'] = ncm_info_by_desc.get('ncm_code', item_data.get('NCM'))
+                    item_data['Denominação do produto'] = ncm_info_by_desc.get('descricao_item', item_data.get('Denominação do produto'))
+
+            # Padroniza o item com o esquema padrão
+            standardized_item = _standardize_item_data(item_data)
+            standardized_item["Valor total do item"] = standardized_item["Quantidade"] * standardized_item["Valor Unitário"]
+            
+            # NOVO: Filtrar itens que não são produtos reais
+            # Critérios de filtragem:
+            # 1. Código Interno não pode ser "Pedido de Compra" (case-insensitive)
+            # 2. Quantidade deve ser maior que 0
+            if standardized_item["Código Interno"] and \
+               "pedido de compra" not in standardized_item["Código Interno"].lower() and \
+               standardized_item["Quantidade"] > 0:
+                items_from_file.append(standardized_item)
+            else:
+                logger.warning(f"Item filtrado (não é um produto válido): {standardized_item}")
+
+        _display_message_box(f"Total de {len(items_from_file)} itens extraídos do arquivo.", "success")
     except Exception as e:
-        _display_message_box(f"Erro ao processar o arquivo Excel/CSV: {e}", "error")
-        logger.exception("Erro durante a importação de itens do arquivo.")
-        return False
-
-def _generate_items_excel_template():
-    """Gera um arquivo Excel padrão para inserção de dados de itens de processo."""
-    template_columns = ["Cobertura", "Codigo interno", "Denominação", "SKU", "Quantidade", "Preço", "NCM", "Peso Unitário"]
-    example_row = {
-        "Cobertura": "NÃO", "Codigo interno": "INT-001", "Denominação": "Processador Intel Core i7",
-        "SKU": "CPU-I7-12700K", "Quantidade": 5, "Preço": 350.00, "NCM": "84715010", "Peso Unitário": 0.5
-    }
-    df_template = pd.DataFrame([example_row], columns=template_columns) 
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_template.to_excel(writer, index=False, sheet_name='Template Itens')
-    output.seek(0)
-    return output
-
-# NOVO: Função para gerar o template de dados gerais do processo
-def _generate_process_excel_template():
-    """Gera um arquivo Excel padrão para inserção de dados gerais do processo."""
-    # Colunas na ordem e nomes solicitados pelo usuário
-    template_columns = [
-        "Process Reference", "Supplier", "Items", "PI / Invoice", "QTY", "Invoice Value USD",
-        "PAY?", "OC", "Purchase Date", "DI Estimated R$", "Freight USD Est.",
-        "Shipping Date", "AGENTE", "Status", "ETA Pichau", "Status para e-mail",
-        "AIR or SEA", "Containers QTY", "Origin", "Dest.", "Terms", "Buyer", "Modal",
-        "Consolidado?", "Quantos processos - LCL" # NOVO
-    ]
-    example_row = {
-        "Process Reference": "PR-2024-EXEMPLO",
-        "Supplier": "Acme Corp",
-        "Items": "Eletrônicos",
-        "PI / Invoice": "INV-2024-001",
-        "QTY": 100,
-        "Invoice Value USD": 15000.00,
-        "PAY?": "Sim",
-        "OC": "OC-XYZ-001",
-        "Purchase Date": "2024-01-10",
-        "DI Estimated R$": 5000.00,
-        "Freight USD Est.": 300.00,
-        "Shipping Date": "2024-02-15",
-        "AGENTE": "Agente ABC",
-        "Status": "Desembaraço Aduaneiro",
-        "ETA Pichau": "2024-03-05",
-        "Status para e-mail": "Em Andamento",
-        "AIR or SEA": "AIR", # Pode ser "AIR" ou "SEA"
-        "Containers QTY": 0, # Preencher se "AIR or SEA" for "SEA"
-        "Origin": "Shenzhen",
-        "Dest.": "São Paulo",
-        "Terms": "FOB",
-        "Buyer": "João Silva",
-        "Modal": "Aéreo", # Pode ser "Aéreo" ou "Maritimo"
-        "Consolidado?": "Não", # NOVO
-        "Quantos processos - LCL": 0 # NOVO
-    }
-    df_template = pd.DataFrame([example_row], columns=template_columns) 
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_template.to_excel(writer, index=False, sheet_name='Template Dados Gerais')
-    output.seek(0)
-    return output
-
-# NOVO: Função para importar dados gerais do processo de um arquivo Excel/CSV
-def _import_process_from_excel(uploaded_file: Any, form_state_key: str) -> bool:
-    """
-    Importa dados gerais do processo de um arquivo Excel/CSV e os atualiza no st.session_state.
-    """
-    if uploaded_file is None:
-        return False
-
-    file_extension = os.path.splitext(uploaded_file.name)[1]
-    df = None
-
-    try:
-        if file_extension.lower() == '.csv':
-            try: df = pd.read_csv(uploaded_file, encoding='utf-8')
-            except UnicodeDecodeError: df = pd.read_csv(uploaded_file, encoding='latin-1')
-            except Exception: df = pd.read_csv(uploaded_file, sep=';')
-        elif file_extension.lower() in ('.xlsx', '.xls'):
-            df = pd.read_excel(uploaded_file)
-        else:
-            _display_message_box("Formato de arquivo não suportado. Por favor, use .csv, .xls ou .xlsx.", "error")
-            return False
-
-        if df.empty:
-            _display_message_box("O arquivo importado está vazio.", "warning")
-            return False
-
-        # Mapeamento de colunas da planilha para os campos do formulário
-        column_mapping_excel_to_form_fields = {
-            "Process Reference": "Processo_Novo",
-            "Supplier": "Fornecedor",
-            "Items": "Tipos_de_item",
-            "PI / Invoice": "N_Invoice",
-            "QTY": "Quantidade",
-            "Invoice Value USD": "Valor_USD",
-            "PAY?": "Pago",
-            "OC": "N_Ordem_Compra",
-            "Purchase Date": "Data_Compra",
-            "DI Estimated R$": "Estimativa_Impostos_Total",
-            "Freight USD Est.": "Estimativa_Frete_USD",
-            "Shipping Date": "Data_Embarque",
-            "AGENTE": "Agente_de_Carga_Novo",
-            "Status": "Observacao",
-            "ETA Pichau": "Previsao_Pichau",
-            "Status para e-mail": "Status_Geral",
-            "AIR or SEA": "Modal_Air_Sea_Temp", # Usar um campo temporário para desambiguar com 'Modal'
-            "Containers QTY": "Quantidade_Containers",
-            "Origin": "Origem",
-            "Dest.": "Destino",
-            "Terms": "INCOTERM",
-            "Buyer": "Comprador",
-            "Modal": "Modal", # Pode estar presente, mas "AIR or SEA" tem prioridade
-            "Consolidado?": "Consolidado", # NOVO
-            "Quantos processos - LCL": "LCL_Processos_Quantidade", # NOVO
-        }
-        
-        # Consideramos apenas a primeira linha para os dados do processo
-        process_data_from_file = df.iloc[0].to_dict()
-
-        updates_made = False
-        for col_excel, form_field_name in column_mapping_excel_to_form_fields.items():
-            if col_excel in process_data_from_file:
-                value = process_data_from_file[col_excel]
-                # Conversões de tipo e tratamento de valores
-                if pd.isna(value):
-                    value = None
-                elif form_field_name in ["Quantidade", "Quantidade_Containers", "LCL_Processos_Quantidade"]: # NOVO: LCL
-                    value = int(value) if value is not None else 0
-                elif form_field_name in ["Valor_USD", "Estimativa_Impostos_Total", "Estimativa_Frete_USD"]:
-                    value = float(value) if value is not None else 0.0
-                elif "Date" in col_excel and value is not None:
-                    try:
-                        if isinstance(value, (datetime, date)):
-                            value = value.strftime("%Y-%m-%d")
-                        elif isinstance(value, str):
-                            value = pd.to_datetime(value).strftime("%Y-%m-%d")
-                    except Exception:
-                        value = None # Fallback se a data não for reconhecida
-                
-                # Lógica especial para "AIR or SEA" vs "Modal"
-                if form_field_name == "Modal_Air_Sea_Temp":
-                    if value == "AIR":
-                        st.session_state[form_state_key]["Modal"] = "Aéreo"
-                    elif value == "SEA":
-                        st.session_state[form_state_key]["Modal"] = "Maritimo"
-                    # Se "Modal" também estiver na planilha, "AIR or SEA" tem prioridade
-                    if "Modal" in process_data_from_file and "AIR or SEA" not in process_data_from_file:
-                         st.session_state[form_state_key]["Modal"] = process_data_from_file["Modal"]
-
-                elif form_field_name != "Modal" or ("AIR or SEA" not in process_data_from_file):
-                    # Não sobrescreve "Modal" se "AIR or SEA" estiver presente e já tiver sido tratado
-                    st.session_state[form_state_key][form_field_name] = value
-                
-                updates_made = True
-
-        
-
-    except Exception as e:
-        _display_message_box(f"Erro ao processar o arquivo Excel/CSV de dados gerais: {e}", "error")
-        logger.exception("Erro durante a importação de dados gerais do processo do arquivo.")
-        return False
+        _display_message_box(f"Erro ao extrair itens do arquivo: {e}", "error")
+        logger.exception("Erro durante a extração de itens do arquivo.")
+    
+    return items_from_file
 
 
 # Mover a definição de campos_config_tabs para fora da função show_process_form_page
@@ -800,67 +778,66 @@ def _import_process_from_excel(uploaded_file: Any, form_state_key: str) -> bool:
 campos_config_tabs = {
     "Dados Gerais": {
         "col1": {
-            "Processo_Novo": {"label": "Processo:", "type": "text"},
-            "Fornecedor": {"label": "Fornecedor:", "type": "text"},
-            "Tipos_de_item": {"label": "Tipos de item:", "type": "text"},
-            "N_Invoice": {"label": "Nº Invoice:", "type": "text"},
-            "Quantidade": {"label": "Quantidade:", "type": "number"},
-            "N_Ordem_Compra": {"label": "Nº da Ordem de Compra:", "type": "text"},
-            "Agente_de_Carga_Novo": {"label": "Agente de Carga:", "type": "text"},
-            "Origem": {"label": "Origem:", "type": "text"},
-            "Destino": {"label": "Destino:", "type": "text"},
-            "Comprador": {"label": "Comprador:", "type": "text"},
+            "Processo_Novo": {"label": "Processo:", "type": "text", "icon": "📦"}, # Ícone adicionado
+            "Fornecedor": {"label": "Fornecedor:", "type": "text", "icon": "🏢"}, # Ícone adicionado
+            "Tipos_de_item": {"label": "Tipos de item:", "type": "text", "icon": "📝"}, # Ícone adicionado
+            "N_Invoice": {"label": "Nº Invoice:", "type": "text", "icon": "📄"}, # Ícone adicionado
+            "Quantidade": {"label": "Quantidade:", "type": "number", "icon": "🔢"}, # Ícone adicionado
+            "N_Ordem_Compra": {"label": "Nº da Ordem de Compra:", "type": "text", "icon": "🛒"}, # Ícone adicionado
+            "Agente_de_Carga_Novo": {"label": "Agente de Carga:", "type": "text", "icon": "�‍✈️"}, # Ícone adicionado
+            "Origem": {"label": "Origem:", "type": "text", "icon": "🌍"}, # Ícone adicionado
+            "Destino": {"label": "Destino:", "type": "text", "icon": "📍"}, # Ícone adicionado
+            "Comprador": {"label": "Comprador:", "type": "text", "icon": "👤"}, # Ícone adicionado
         },
         "col2": {
-            "Modal": {"label": "Modal:", "type": "dropdown", "values": ["", "Aéreo", "Maritimo", "Consolidado"], "on_change": True}, # Added Consolidado
-            "Navio": {"label": "Navio:", "type": "text", "conditional_field": "Modal", "conditional_value": "Maritimo"}, 
-            "Quantidade_Containers": {"label": "Quantidade de Containers:", "type": "number", "conditional_field": "Modal", "conditional_value": "Maritimo"},
-            "Consolidado": {"label": "Consolidado?:", "type": "dropdown", "values": ["", "Sim", "Não"], "conditional_field": "Modal", "conditional_value": "Consolidado", "on_change": True}, # NOVO: condicional para Modal 'Consolidado'
-            "LCL_Processos_Quantidade": {"label": "Quantos processos - LCL:", "type": "number", "conditional_field": "Consolidado", "conditional_value": "Sim", "min_value": 0, "max_value": 30, "format": "%d"}, # NOVO
-            "INCOTERM": {"label": "INCOTERM:", "type": "dropdown", "values": ["","EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"]},
-            "Pago": {"label": "Pago?:", "type": "dropdown", "values": ["Não", "Sim"]},
-            "Data_Compra": {"label": "Data de Compra:", "type": "date"},
-            "Data_Embarque": {"label": "Data de Embarque:", "type": "date"},
-            "ETA_Recinto": {"label": "ETA no Recinto:", "type": "date"},
-            "Previsao_Pichau": {"label": "Previsão na Pichau:", "type": "date"},
-            "Status_Geral": {"label": "Status Geral (para e-mail):", "type": "dropdown", "values": db_manager.STATUS_OPTIONS},
+            "Modal": {"label": "Modal:", "type": "dropdown", "values": ["", "Aéreo", "Maritimo", "Consolidado"], "on_change": True, "icon": "✈️🚢"}, # Ícone adicionado
+            "Navio": {"label": "Navio:", "type": "text", "conditional_field": "Modal", "conditional_value": "Maritimo", "icon": "🚢"}, # Ícone adicionado
+            "Quantidade_Containers": {"label": "Quantidade de Containers:", "type": "number", "conditional_field": "Modal", "conditional_value": "Maritimo", "icon": "📦"}, # Ícone adicionado
+            "Consolidado": {"label": "Consolidado?:", "type": "dropdown", "values": ["", "Sim", "Não"], "conditional_field": "Modal", "conditional_value": "Consolidado", "on_change": True, "icon": "🔗"}, # Ícone adicionado
+            "LCL_Processos_Quantidade": {"label": "Quantos processos - LCL:", "type": "number", "conditional_field": "Consolidado", "conditional_value": "Sim", "min_value": 0, "max_value": 30, "format": "%d", "icon": "🔢"}, # Ícone adicionado
+            "INCOTERM": {"label": "INCOTERM:", "type": "dropdown", "values": ["","EXW","FCA","FAS","FOB","CFR","CIF","CPT","CIP","DPU","DAP","DDP"], "icon": "🤝"}, # Ícone adicionado
+            "Pago": {"label": "Pago?:", "type": "dropdown", "values": ["Não", "Sim"], "icon": "💸"}, # Ícone adicionado
+            "Data_Compra": {"label": "Data de Compra:", "type": "date", "icon": "📅"}, # Ícone adicionado
+            "Data_Embarque": {"label": "Data de Embarque:", "type": "date", "icon": "🗓️"}, # Ícone adicionado
+            "ETA_Recinto": {"label": "ETA no Recinto:", "type": "date", "icon": "🗓️"}, # Ícone adicionado
+            "Previsao_Pichau": {"label": "Previsão na Pichau:", "type": "date", "icon": "🗓️"}, # Ícone adicionado
+            "Status_Geral": {"label": "Status Geral (para e-mail):", "type": "dropdown", "values": db_manager.STATUS_OPTIONS, "icon": "🚦"}, # Ícone adicionado
         }
     },
     "Itens": {},
     "Valores e Estimativas": {
-        "Estimativa_Dolar_BRL": {"label": "Cambio Estimado (R$):", "type": "currency_br"},
-        "Valor_USD": {"label": "Valor (USD):", "type": "currency_usd", "disabled": True},
-        "Estimativa_Frete_USD": {"label": "Estimativa de Frete (USD):", "type": "currency_usd"},
-        "Estimativa_Seguro_BRL": {"label": "Estimativa Seguro (R$):", "type": "currency_br"},
-        "Estimativa_II_BR": {"label": "Estimativa de II (R$):", "type": "currency_br", "disabled": True},
-        "Estimativa_IPI_BR": {"label": "Estimativa de IPI (R$):", "type": "currency_br", "disabled": True},
-        "Estimativa_PIS_BR": {"label": "Estimativa de PIS (R$):", "type": "currency_br", "disabled": True},
-        "Estimativa_COFINS_BR": {"label": "Estimativa de COFINS (R$):", "type": "currency_br", "disabled": True},
-        "Estimativa_ICMS_BR": {"label": "Estimativa de ICMS (R$):", "type": "currency_br"},
-        "Estimativa_Impostos_Total": {"label": "Estimativa Impostos (R$):", "type": "currency_br", "disabled": True},
-        "Estimativa_Impostos_BR": {"label": "Estimativa Impostos (Antigo):", "type": "currency_br", "disabled": True},
+        "Estimativa_Dolar_BRL": {"label": "Cambio Estimado (R$):", "type": "currency_br", "icon": "💵"}, # Ícone adicionado
+        "Valor_USD": {"label": "Valor (USD):", "type": "currency_usd", "disabled": True, "icon": "💲"}, # Ícone adicionado
+        "Estimativa_Frete_USD": {"label": "Estimativa de Frete (USD):", "type": "currency_usd", "icon": "🚚"}, # Ícone adicionado
+        "Estimativa_Seguro_BRL": {"label": "Estimativa Seguro (R$):", "type": "currency_br", "icon": "🛡️"}, # Ícone adicionado
+        "Estimativa_II_BR": {"label": "Estimativa de II (R$):", "type": "currency_br", "disabled": True, "icon": "💰"}, # Ícone adicionado
+        "Estimativa_IPI_BR": {"label": "Estimativa de IPI (R$):", "type": "currency_br", "disabled": True, "icon": "💰"}, # Ícone adicionado
+        "Estimativa_PIS_BR": {"label": "Estimativa de PIS (R$):", "type": "currency_br", "disabled": True, "icon": "💰"}, # Ícone adicionado
+        "Estimativa_COFINS_BR": {"label": "Estimativa de COFINS (R$):", "type": "currency_br", "disabled": True, "icon": "💰"}, # Ícone adicionado
+        "Estimativa_ICMS_BR": {"label": "Estimativa de ICMS (R$):", "type": "currency_br", "icon": "💰"}, # Ícone adicionado
+        "Estimativa_Impostos_Total": {"label": "Estimativa Impostos (R$):", "type": "currency_br", "disabled": True, "icon": "📊"}, # Ícone adicionado
+        "Estimativa_Impostos_BR": {"label": "Estimativa Impostos (Antigo):", "type": "currency_br", "disabled": True, "icon": "👴"}, # Ícone adicionado
     },
     "Status Operacional": {
         # Campos de status operacional movidos para "Dados Gerais" ou mantidos aqui se forem muito específicos.
         # "Data_Registro": {"label": "Data de Registro:", "type": "date"}, # Movido para Dados Gerais
-        "Documentos_Revisados": {"label": "Documentos Revisados:", "type": "dropdown", "values": ["Não", "Sim"]},
-        "Conhecimento_Embarque": {"label": "Conhecimento de embarque:", "type": "dropdown", "values": ["Não", "Sim"]},
-        "Descricao_Feita": {"label": "Descrição Feita:", "type": "dropdown", "values": ["Não", "Sim"]},
-        "Descricao_Enviada": {"label": "Descrição Enviada:", "type": "dropdown", "values": ["Não", "Sim"]},
-        "Nota_feita": {"label": "Nota feita?:", "type": "dropdown", "values": ["Não", "Sim"]},
-        "Conferido": {"label": "Conferido?:", "type": "dropdown", "values": ["Não", "Sim"]},
+        "Documentos_Revisados": {"label": "Documentos Revisados:", "type": "dropdown", "values": ["Não", "Sim"], "icon": "✅"}, # Ícone adicionado
+        "Conhecimento_Embarque": {"label": "Conhecimento de embarque:", "type": "dropdown", "values": ["Não", "Sim"], "icon": "📄"}, # Ícone adicionado
+        "Descricao_Feita": {"label": "Descrição Feita:", "type": "dropdown", "values": ["Não", "Sim"], "icon": "✍️"}, # Ícone adicionado
+        "Descricao_Enviada": {"label": "Descrição Enviada:", "type": "dropdown", "values": ["Não", "Sim"], "icon": "✉️"}, # Ícone adicionado
+        "Nota_feita": {"label": "Nota feita?:", "type": "dropdown", "values": ["Não", "Sim"], "icon": "📝"}, # Ícone adicionado
+        "Conferido": {"label": "Conferido?:", "type": "dropdown", "values": ["Não", "Sim"], "icon": "✔️"}, # Ícone adicionado
     }
 }
 
 # Callback para forçar o rerun quando o Modal muda e afetar campos condicionais
 def _on_modal_change_rerun():
-    # Streamlit já faz rerun quando on_change modifica st.session_state.
-    # Adicionar st.rerun() explicitamente para garantir que a UI condicional seja atualizada imediatamente.
-    st.rerun() #
+    # Removido st.rerun() para evitar "no-op" warning. Streamlit re-executa ao mudar session_state.
+    pass 
 
 def _on_consolidado_change_rerun():
-    # Similar ao modal_change, para o campo Consolidado
-    st.rerun() #
+    # Removido st.rerun() para evitar "no-op" warning. Streamlit re-executa ao mudar session_state.
+    pass
 
 
 def _initialize_form_state(form_state_key: str, process_identifier: Optional[Any], is_cloning: bool):
@@ -923,7 +900,18 @@ def _initialize_form_state(form_state_key: str, process_identifier: Optional[Any
                 if config["type"] == "number":
                     st.session_state[form_state_key][field_name] = process_data.get(field_name, 0) if (process_data.get(field_name) is not None and not pd.isna(process_data.get(field_name))) else 0
                 elif config["type"] == "currency_br" or config["type"] == "currency_usd":
-                    st.session_state[form_state_key][field_name] = process_data.get(field_name, 0.0) if (process_data.get(field_name) is not None and not pd.isna(process_data.get(field_name))) else 0.0
+                    # Tratamento especial para Estimativa_Dolar_BRL - usar PTAX Venda como padrão
+                    if field_name == "Estimativa_Dolar_BRL":
+                        db_value = process_data.get(field_name)
+                        if db_value is not None and not pd.isna(db_value) and db_value != 0.0:
+                            st.session_state[form_state_key][field_name] = db_value
+                            logger.info(f"[_initialize_form_state] Usando valor do banco para {field_name}: {db_value}")
+                        else:
+                            ptax_value = get_current_dolar_ptax_venda()
+                            st.session_state[form_state_key][field_name] = ptax_value
+                            logger.info(f"[_initialize_form_state] Usando PTAX Venda para {field_name}: {ptax_value}")
+                    else:
+                        st.session_state[form_state_key][field_name] = process_data.get(field_name, 0.0) if (process_data.get(field_name) is not None and not pd.isna(process_data.get(field_name))) else 0.0
                 else:
                     st.session_state[form_state_key][field_name] = process_data.get(field_name)
 
@@ -941,24 +929,17 @@ def _initialize_form_state(form_state_key: str, process_identifier: Optional[Any
             "Modal": st.session_state[form_state_key].get("Modal", ""),
             "INCOTERM": st.session_state[form_state_key].get("INCOTERM", ""), 
             "Pago": st.session_state[form_state_key].get("Pago", "Não"), 
-            "Status_Geral": st.session_state[form_state_key].get("Status_Geral", ""), 
-            "Documentos_Revisados": st.session_state[form_state_key].get("Documentos_Revisados", "Não"),
-            "Conhecimento_Embarque": st.session_state[form_state_key].get("Conhecimento_Embarque", "Não"), 
-            "Descricao_Feita": st.session_state[form_state_key].get("Descricao_Feita", "Não"), 
-            "Descricao_Enviada": st.session_state[form_state_key].get("Descricao_Enviada", "Não"),
-            "Nota_feita": st.session_state[form_state_key].get("Nota_feita", "Não"), 
-            "Conferido": st.session_state[form_state_key].get("Conferido", "Não"), 
             "Data_Compra": st.session_state[form_state_key].get("Data_Compra", None), 
-            "Data_Embarque": st.session_state[form_state_key].get("Data_Embarque", None),
+            "Data_Embarque": st.session_state[form_state_key].get("Data_Embarque", None), 
             "ETA_Recinto": st.session_state[form_state_key].get("ETA_Recinto", None), 
-            "Data_Registro": st.session_state[form_state_key].get("Data_Registro", None), 
             "Previsao_Pichau": st.session_state[form_state_key].get("Previsao_Pichau", None),
+            "Status_Geral": st.session_state[form_state_key].get("Status_Geral", ""), 
             "DI_ID_Vinculada": st.session_state[form_state_key].get("DI_ID_Vinculada", None), 
             "Estimativa_Impostos_Total": st.session_state[form_state_key].get("Estimativa_Impostos_Total", 0.0), 
             "Estimativa_Impostos_BR": st.session_state[form_state_key].get("Estimativa_Impostos_BR", 0.0),
-            "Estimativa_Dolar_BRL": st.session_state[form_state_key].get("Estimativa_Dolar_BRL", 0.0), 
+            "Estimativa_Dolar_BRL": st.session_state[form_state_key].get("Estimativa_Dolar_BRL", get_current_dolar_ptax_venda()), 
             "Valor_USD": st.session_state[form_state_key].get("Valor_USD", 0.0), 
-            "Estimativa_Frete_USD": st.session_state[form_state_key].get("Estimativa_Frete_USD", 0.0),
+            "Estimativa_Frete_USD": st.session_state[form_state_key].get("Estimativa_Frete_USD", 0.0), 
             "Estimativa_Seguro_BRL": st.session_state[form_state_key].get("Estimativa_Seguro_BRL", 0.0), 
             "Estimativa_II_BR": st.session_state[form_state_key].get("Estimativa_II_BR", 0.0), 
             "Estimativa_IPI_BR": st.session_state[form_state_key].get("Estimativa_IPI_BR", 0.0), 
@@ -1000,13 +981,42 @@ def _initialize_form_state(form_state_key: str, process_identifier: Optional[Any
         df_items_calc = pd.DataFrame(st.session_state.process_items_data)
         st.session_state.total_invoice_value_usd = df_items_calc["Valor total do item"].sum() if "Valor total do item" in df_items_calc.columns else 0.0
         
-        total_invoice_weight_kg_calc = 0.0
-        if "Peso Unitário" in df_items_calc.columns and "Quantidade" in df_items_calc.columns:
-            # Garante que as colunas são numéricas antes de multiplicar
-            peso_unitario_numeric = pd.to_numeric(df_items_calc['Peso Unitário'], errors='coerce').fillna(0)
-            quantidade_numeric = pd.to_numeric(df_items_calc['Quantidade'], errors='coerce').fillna(0)
-            total_invoice_weight_kg_calc = (peso_unitario_numeric * quantidade_numeric).sum()
+        # Como removemos Peso Unitário, definimos um peso padrão baseado no valor
+        # ou simplesmente 1.0 por item para manter a funcionalidade
+        total_invoice_weight_kg_calc = len(st.session_state.process_items_data) * 1.0 if st.session_state.process_items_data else 0.0
         st.session_state.total_invoice_weight_kg = total_invoice_weight_kg_calc
+        
+        # NOVO: Recalcula impostos de todos os itens com alíquotas atualizadas do Firestore
+        # Isso garante que mesmo itens carregados do banco tenham impostos atualizados
+        logger.info(f"[_initialize_form_state] Recalculando impostos para {len(st.session_state.process_items_data)} itens carregados")
+        
+        dolar_brl = st.session_state[form_state_key].get("Estimativa_Dolar_BRL", get_current_dolar_ptax_venda())
+        frete_usd = st.session_state[form_state_key].get("Estimativa_Frete_USD", 0.0)
+        seguro_brl = st.session_state[form_state_key].get("Estimativa_Seguro_BRL", 0.0)
+        
+        # Recalcula impostos para todos os itens carregados
+        total_ii = total_ipi = total_pis = total_cofins = total_icms = 0.0
+        for item in st.session_state.process_items_data:
+            calculate_item_taxes_and_values(
+                item, dolar_brl, st.session_state.total_invoice_value_usd, 
+                st.session_state.total_invoice_weight_kg, frete_usd, seguro_brl
+            )
+            # Soma os impostos recalculados
+            total_ii += item.get('Estimativa_II_BR', 0.0)
+            total_ipi += item.get('Estimativa_IPI_BR', 0.0)
+            total_pis += item.get('Estimativa_PIS_BR', 0.0)
+            total_cofins += item.get('Estimativa_COFINS_BR', 0.0)
+            total_icms += item.get('Estimativa_ICMS_BR', 0.0)
+        
+        # Atualiza os totais no formulário com os valores recalculados
+        st.session_state[form_state_key]['Estimativa_II_BR'] = total_ii
+        st.session_state[form_state_key]['Estimativa_IPI_BR'] = total_ipi
+        st.session_state[form_state_key]['Estimativa_PIS_BR'] = total_pis
+        st.session_state[form_state_key]['Estimativa_COFINS_BR'] = total_cofins
+        st.session_state[form_state_key]['Estimativa_ICMS_BR'] = total_icms
+        st.session_state[form_state_key]['Estimativa_Impostos_Total'] = total_ii + total_ipi + total_pis + total_cofins + total_icms
+        
+        logger.info(f"[_initialize_form_state] Impostos recalculados: II=R${total_ii:.2f}, IPI=R${total_ipi:.2f}, PIS=R${total_pis:.2f}, COFINS=R${total_cofins:.2f}, ICMS=R${total_icms:.2f}")
     else:
         st.session_state.total_invoice_value_usd = 0.0
         st.session_state.total_invoice_weight_kg = 0.0
@@ -1030,57 +1040,159 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
             margin-top: 0;
             padding-top: 0;
             text-align: center;
-            font-size: 2.1rem;
-            font-weight: 700;
-            color: #0787FF;
-            letter-spacing: 0.5px;
         }
         .tab-content {
-            padding: 1.2rem 0.5rem 0.5rem 0.5rem;
+            padding: 1rem;
             margin-top: 0.5rem;
         }
         .streamlit-expanderHeader {
-            font-size: 1.13rem;
+            font-size: 1.1rem;
             font-weight: 600;
         }
         div[data-testid="stForm"] {
-            border: 1px solid #e3e8f0;
-            border-radius: 0.7rem;
-            padding: 1.2rem 1.5rem 1.2rem 1.5rem;
-            margin-top: 1.2rem;
-            background: rgba(255,255,255,0.92);
-            box-shadow: 0 2px 12px rgba(7,135,255,0.07);
+            border: 1px solid #f0f2f6;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-top: 1rem;
         }
         div.stButton > button {
             width: 100%;
-            border-radius: 8px;
-            font-size: 1.08em;
+            border-radius: 0.5rem; /* Adicionado para botões */
+            padding: 0.75rem; /* Adicionado padding para botões */
+            font-size: 1rem; /* Adicionado tamanho da fonte para botões */
+            font-weight: 600; /* Adicionado peso da fonte para botões */
+        }
+        /* Estilos para as caixas de mensagem (info, warning, error, success) */
+        div[data-testid="stAlert"] {
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        div[data-testid="stAlert"].stAlert-info {
+            background-color: rgba(33, 150, 243, 0.1); /* Azul claro */
+            border-left: 5px solid #2196F3;
+        }
+        div[data-testid="stAlert"].stAlert-warning {
+            background-color: rgba(255, 193, 7, 0.1); /* Amarelo claro */
+            border-left: 5px solid #FFC107;
+        }
+        div[data-testid="stAlert"].stAlert-error {
+            background-color: rgba(244, 67, 54, 0.1); /* Vermelho claro */
+            border-left: 5px solid #F44336;
+        }
+        div[data-testid="stAlert"].stAlert-success {
+            background-color: rgba(76, 175, 80, 0.1); /* Verde claro */
+            border-left: 5px solid #4CAF50;
+        }
+        .observation-container {
+            background-color: #f8f9fa; /* Fundo claro para o container de observação */
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid #e0e0e0; /* Borda sutil */
+        }
+        .observation-title {
+            font-size: 1.1rem;
             font-weight: 600;
-            background: linear-gradient(90deg, #0787FF 0%, #4A90E2 100%);
-            color: #fff;
-            border: none;
-            box-shadow: 0 2px 8px rgba(7,135,255,0.08);
-            transition: background 0.2s, color 0.2s;
+            margin-bottom: 0.75rem;
+            color: #333; /* Cor mais escura para o título */
         }
-        div.stButton > button:hover {
-            background: linear-gradient(90deg, #005fa3 0%, #0787FF 100%);
-            color: #fff;
+        /* Estilo para inputs de texto e números */
+        div[data-testid="stTextInput"] > div > input,
+        div[data-testid="stNumberInput"] > div > input,
+        div[data-testid="stDateInput"] > div > input,
+        div[data-testid="stSelectbox"] > div > button {
+            border-radius: 0.5rem;
+            border: 1px solid #ced4da;
+            padding: 0.5rem 0.75rem;
         }
-        .stTextInput > div > input, .stNumberInput > div > input, .stDateInput > div > input {
-            border-radius: 6px;
-            border: 1px solid #c3d0e6;
-            padding: 0.4em 0.7em;
-            font-size: 1.05em;
+        /* Estilo para text area */
+        div[data-testid="stTextArea"] > div > textarea {
+            border-radius: 0.5rem;
+            border: 1px solid #ced4da;
+            padding: 0.5rem 0.75rem;
         }
-        .stSelectbox > div > div {
-            border-radius: 6px;
-            border: 1px solid #c3d0e6;
-            font-size: 1.05em;
+        /* Estilos para o cabeçalho dinâmico */
+        .header-new-process {
+            background-color: #d4edda; /* Verde claro */
+            color: #155724; /* Verde escuro */
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            border: 1px solid #c3e6cb;
         }
-        @media (max-width: 900px) {
-            div[data-testid="stForm"] {
-                padding: 0.7rem 0.3rem 0.7rem 0.3rem;
-            }
+        .header-edit-process {
+            background-color: #ffeeba; /* Amarelo claro */
+            color: #856404; /* Amarelo escuro */
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            border: 1px solid #ffdf7e;
+        }
+        /* Estilo para os cards de itens */
+        .item-card {
+            background-color: #f0f2f6; /* Cor de fundo suave */
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid #e0e0e0;
+        }
+        .item-card-header {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+            color: #333;
+        }
+        /* Estilos para tornar a interface de itens mais compacta */
+        div[data-testid="stAppViewContainer"] .item-section {
+            margin-bottom:  1rem;
+        }
+        div[data-testid="stAppViewContainer"] .item-section h4 {
+            margin-bottom: 0.5rem;
+            font-size: 1.1rem;
+        }
+        div[data-testid="stAppViewContainer"] .item-section h5 {
+            margin-bottom: 0.3rem;
+            font-size: 1rem;
+        }
+        /* Compactar campos de formulário na seção de itens */
+        div[data-testid="stAppViewContainer"] .item-detail-form .stTextInput > div,
+        div[data-testid="stAppViewContainer"] .item-detail-form .stNumberInput > div,
+        div[data-testid="stAppViewContainer"] .item-detail-form .stSelectbox > div,
+        div[data-testid="stAppViewContainer"] .item-detail-form .stTextArea > div {
+            margin-bottom: 0.5rem;
+        }
+        /* Compactar labels dos campos */
+        div[data-testid="stAppViewContainer"] .item-detail-form label {
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 0.2rem;
+        }
+        /* Compactar radio buttons na lista de itens */
+        div[data-testid="stAppViewContainer"] .item-list-radio .stRadio > div {
+            gap: 0.3rem;
+        }
+        div[data-testid="stAppViewContainer"] .item-list-radio .stRadio label {
+            font-size: 0.85rem;
+            line-height: 1.2;
+        }
+        /* Compactar informações de impostos */
+        div[data-testid="stAppViewContainer"] .tax-info {
+            font-size: 0.85rem;
+            line-height: 1.3;
+            margin-bottom: 0.2rem;
+        }
+        /* Compactar botões na seção de itens */
+        div[data-testid="stAppViewContainer"] .item-buttons .stButton > button {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.9rem;
+            margin-bottom: 0.3rem;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -1091,9 +1203,8 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
     # Sempre inicialize process_items_data e process_items_loaded_for_id no início da função
     st.session_state.setdefault('process_items_data', [])
     st.session_state.setdefault('process_items_loaded_for_id', None)
-
-    # Cabeçalho principal
-    st.markdown('<div class="main-header">Formulário de Processo de Importação</div>', unsafe_allow_html=True)
+    # NOVO: Inicializa o item selecionado para edição detalhada
+    st.session_state.setdefault('selected_item_for_detail_edit', None)
 
     # Flag para saber se estamos em um "novo" processo (inclui clones)
     is_new_process = process_identifier is None or is_cloning
@@ -1139,12 +1250,15 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
         if linked_di_data:
             linked_di_number = _format_di_number(str(linked_di_data.get('numero_di') if isinstance(linked_di_data, dict) else linked_di_data['numero_di']))
 
-    # Cabeçalho com título centralizado
-    st.markdown(f"<h2 class='main-header'>{'Novo Processo' if st.session_state[f'{form_state_key}_is_new_process_flag'] else f'Editar Processo: {st.session_state[form_state_key].get('Processo_Novo', '')}'}</h2>", unsafe_allow_html=True)
+    # Cabeçalho com título centralizado e estilo dinâmico
+    if st.session_state[f'{form_state_key}_is_new_process_flag']:
+        st.markdown("<h2 class='header-new-process'>➕ Novo Processo</h2>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<h2 class='header-edit-process'>✏️ Editar Processo: {st.session_state[form_state_key].get('Processo_Novo', '')}</h2>", unsafe_allow_html=True)
     
     # Informações de DI vinculada, se existir
     if linked_di_id is not None and linked_di_number:
-        st.info(f"**DI Vinculada:** {linked_di_number} - Clique no botão ao final do formulário para ver detalhes.")
+        st.info(f"**🔗 DI Vinculada:** {linked_di_number} - Clique no botão ao final do formulário para ver detalhes.")
     elif linked_di_id is not None and not linked_di_number: 
         st.warning(f"DI vinculada (ID: {linked_di_id}) não encontrada no banco de dados.")
 
@@ -1154,6 +1268,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
     st.session_state.setdefault('show_edit_item_popup', False)
     st.session_state.setdefault('item_to_edit_index', None)
     st.session_state.setdefault('last_processed_upload_key', None)
+    st.session_state.setdefault('uploaded_file_key', None) # Alterado para uploaded_file_key
 
     tabs_names = list(campos_config_tabs.keys())
     tabs = st.tabs(tabs_names)
@@ -1166,12 +1281,13 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                 with col_left:
                     for field_name, config in campos_config_tabs[tab_name]["col1"].items():
                         current_value = st.session_state[form_state_key].get(field_name)
+                        label_with_icon = f"{config.get('icon', '')} {config['label']}" # Adiciona ícone ao label
                         if config["type"] == "number":
                             default_value_for_number_input = int(current_value) if (current_value is not None and not pd.isna(current_value)) else 0
-                            widget_value = st.number_input(config["label"], value=default_value_for_number_input, format="%d", key=f"{form_state_key}_{field_name}", disabled=config.get("disabled", False))
+                            widget_value = st.number_input(label_with_icon, value=default_value_for_number_input, format="%d", key=f"{form_state_key}_{field_name}", disabled=config.get("disabled", False))
                             st.session_state[form_state_key][field_name] = int(widget_value) if widget_value is not None else None
                         else:
-                            widget_value = st.text_input(config["label"], value=current_value if current_value is not None else "", key=f"{form_state_key}_{field_name}", disabled=config.get("disabled", False))
+                            widget_value = st.text_input(label_with_icon, value=current_value if current_value is not None else "", key=f"{form_state_key}_{field_name}", disabled=config.get("disabled", False))
                             st.session_state[form_state_key][field_name] = widget_value if widget_value else None
 
                 with col_right:
@@ -1204,6 +1320,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                                         st.session_state[form_state_key][field_name] = None
                         
                         is_disabled_overall = config.get("disabled", False) or not is_field_enabled
+                        label_with_icon = f"{config.get('icon', '')} {config['label']}" # Adiciona ícone ao label
 
                         if config["type"] == "dropdown":
                             options = config["values"]
@@ -1222,7 +1339,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                                 on_change_callback = _on_consolidado_change_rerun
 
                             widget_value = st.selectbox(
-                                config["label"], 
+                                label_with_icon, 
                                 options=options, 
                                 index=default_index, 
                                 key=f"{form_state_key}_{field_name}", 
@@ -1239,7 +1356,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                             num_format = config.get("format", "%d")
 
                             widget_value = st.number_input(
-                                config["label"], 
+                                label_with_icon, 
                                 value=default_value_for_number_input, 
                                 format=num_format, 
                                 key=f"{form_state_key}_{field_name}", 
@@ -1258,11 +1375,11 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                                         current_value_dt = current_value.date()
                                 except ValueError:
                                     current_value_dt = None
-                            widget_value = st.date_input(config["label"], value=current_value_dt, key=f"{form_state_key}_{field_name}", format="DD/MM/YYYY", disabled=is_disabled_overall)
+                            widget_value = st.date_input(label_with_icon, value=current_value_dt, key=f"{form_state_key}_{field_name}", format="DD/MM/YYYY", disabled=is_disabled_overall)
                             st.session_state[form_state_key][field_name] = widget_value.strftime("%Y-%m-%d") if widget_value else None
                         else: # text input
                             widget_value = st.text_input(
-                                config["label"], 
+                                label_with_icon, 
                                 value=current_value if current_value is not None else "", 
                                 key=f"{form_state_key}_{field_name}", 
                                 disabled=is_disabled_overall, 
@@ -1272,23 +1389,13 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
 
                 st.markdown("---")
                 st.subheader("Importar/Exportar Dados do Processo")
-                col_download_process_template, col_upload_process_excel = st.columns([0.25, 0.75])
-                with col_download_process_template:
-                    process_excel_template_data = _generate_process_excel_template()
-                    st.download_button(
-                        label="Baixar Template Processo", data=process_excel_template_data, file_name="template_dados_gerais_processo.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_process_excel_template_new"
-                    )
-                with col_upload_process_excel:
-                    uploaded_process_file = st.file_uploader("Upload Excel/CSV de Dados do Processo", type=["csv", "xls", "xlsx"], key="upload_process_file_new")
-                    current_process_upload_key = (uploaded_process_file.name, uploaded_process_file.size) if uploaded_process_file else None
-                    
-                    if uploaded_process_file is not None and current_process_upload_key != st.session_state.get('last_processed_process_upload_key'):
-                        if _import_process_from_excel(uploaded_process_file, form_state_key):
-                            st.session_state.last_processed_process_upload_key = current_process_upload_key
-                            st.rerun()
-                        else:
-                            st.session_state.last_processed_process_upload_key = None
+                # REMOVIDO: Baixar Template Processo
+                # REMOVIDO: Upload Excel/CSV de Dados do Processo
+                st.info("Funcionalidade de importação/exportação de dados gerais do processo via Excel/CSV removida.")
+                
+                # Recalcular automaticamente todos os itens se os campos relevantes mudarem
+                _recalculate_all_items_if_needed(form_state_key)
+
 
             elif tab_name == "Itens":
                 st.subheader("Itens do Processo")
@@ -1299,32 +1406,31 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                 col_add_item, col_edit_item, col_delete_item = st.columns([0.15, 0.15, 0.15])
 
                 with col_add_item:
-                    if st.button("Adicionar Item", key="add_item_button_in_items_tab"):
+                    if st.button("Adicionar Item Manualmente", key="add_item_button_in_items_tab"):
                         st.session_state.show_add_item_popup = True
                         st.session_state.show_edit_item_popup = False
                 
                 if st.session_state.get('show_add_item_popup', False):
-                    # Forçando um uuid para a chave do popover para evitar reuso acidental se o conteúdo interno mudar
-                    with st.popover("Adicionar Novo Item", key=f"add_item_popover_{uuid.uuid4()}"):
+                    # Removido 'key' do st.popover para corrigir TypeError
+                    with st.popover("Adicionar Novo Item"): 
                         with st.form("add_item_form_fixed", clear_on_submit=True):
-                            new_item_codigo_interno = st.text_input("Código Interno", key="new_item_codigo_interno_popup")
+                            new_item_codigo_interno = st.text_input("Código Interno", value="", key="new_item_codigo_interno_popup")
                             all_ncm_items = db_utils.selecionar_todos_ncm_itens()
                             # Garantir que ncm_options sempre tenha uma opção vazia no início
                             ncm_options = [""] + sorted([ncm_list_page.format_ncm_code(item['ncm_code']) for item in all_ncm_items]) if ncm_list_page else [""]
                             new_item_ncm_display = st.selectbox("NCM", options=ncm_options, key="new_item_ncm_popup")
                             new_item_cobertura = st.selectbox("Cobertura", options=["SIM", "NÃO"], key="new_item_cobertura_popup")
-                            new_item_sku = st.text_input("SKU", key="new_item_sku_popup")
+                            new_item_sku = st.text_input("SKU", value="", key="new_item_sku_popup")
                             new_item_quantidade = st.number_input("Quantidade", min_value=0, value=0, step=1, key="new_item_quantidade_popup")
                             new_item_valor_unitario = st.number_input("Valor Unitário (USD)", min_value=0.0, format="%.2f", key="new_item_valor_unitario_popup")
-                            new_item_peso_unitario = st.number_input("Peso Unitário (KG)", min_value=0.0, format="%.4f", key="new_item_peso_unitario_popup")
-                            new_item_denominacao = st.text_input("Denominação do produto", key="new_item_denominacao_popup")
-                            new_item_detalhamento = st.text_input("Detalhamento complementar do produto", key="new_item_detalhamento_popup")
+                            new_item_denominacao = st.text_input("Denominação do produto", value="", key="new_item_denominacao_popup")
+                            new_item_detalhamento = st.text_input("Detalhamento complementar do produto", value="", key="new_item_detalhamento_popup")
 
                             if st.form_submit_button("Adicionar Item"):
                                 raw_new_item_data = {
                                     "Código Interno": new_item_codigo_interno, "NCM": re.sub(r'\D', '', new_item_ncm_display) if new_item_ncm_display else None,
                                     "Cobertura": new_item_cobertura, "SKU": new_item_sku, "Quantidade": new_item_quantidade, 
-                                    "Valor Unitário": new_item_valor_unitario, "Peso Unitário": new_item_peso_unitario,
+                                    "Valor Unitário": new_item_valor_unitario,
                                     "Denominação do produto": new_item_denominacao, "Detalhamento complementar do produto": new_item_detalhamento,
                                     "Fornecedor": current_fornecedor_context, "Invoice N#": current_invoice_n_context
                                 }
@@ -1332,6 +1438,23 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                                 standardized_new_item_data = _standardize_item_data(raw_new_item_data, current_fornecedor_context, current_invoice_n_context)
                                 standardized_new_item_data["Valor total do item"] = standardized_new_item_data["Quantidade"] * standardized_new_item_data["Valor Unitário"]
                                 
+                                # --- Automação da busca de NCM/Descrição para item manual ---
+                                if standardized_new_item_data.get('NCM'):
+                                    ncm_info = db_utils.get_ncm_item_by_ncm_code(standardized_new_item_data['NCM'])
+                                    if ncm_info:
+                                        standardized_new_item_data['Denominação do produto'] = ncm_info.get('descricao_item', standardized_new_item_data.get('Denominação do produto'))
+                                        logger.info(f"[Adicionar Item] NCM {standardized_new_item_data['NCM']} encontrado. Descrição: {ncm_info.get('descricao_item')}")
+                                    else:
+                                        logger.warning(f"[Adicionar Item] NCM {standardized_new_item_data['NCM']} não encontrado no banco de dados")
+                                elif standardized_new_item_data.get('Denominação do produto'):
+                                    ncm_info_by_desc = db_utils.search_ncm_by_description(standardized_new_item_data['Denominação do produto'])
+                                    if ncm_info_by_desc:
+                                        standardized_new_item_data['NCM'] = ncm_info_by_desc.get('ncm_code', standardized_new_item_data.get('NCM'))
+                                        standardized_new_item_data['Denominação do produto'] = ncm_info_by_desc.get('descricao_item', standardized_new_item_data.get('Denominação do produto'))
+                                        logger.info(f"[Adicionar Item] Busca por descrição encontrou NCM {ncm_info_by_desc.get('ncm_code')}")
+                                    else:
+                                        logger.warning(f"[Adicionar Item] Nenhum NCM encontrado para descrição: {standardized_new_item_data['Denominação do produto']}")
+
                                 # Anexa o novo item ao process_items_data
                                 st.session_state.process_items_data.append(standardized_new_item_data)
                                 
@@ -1339,9 +1462,8 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                                 # Criar um DataFrame temporário para os cálculos agregados
                                 temp_df_for_calc = pd.DataFrame(st.session_state.process_items_data)
                                 total_invoice_value_usd_recalc = temp_df_for_calc["Valor total do item"].sum() if "Valor total do item" in temp_df_for_calc.columns else 0.0
-                                total_invoice_weight_kg_recalc = 0.0
-                                if "Peso Unitário" in temp_df_for_calc.columns and "Quantidade" in temp_df_for_calc.columns:
-                                    total_invoice_weight_kg_recalc = (pd.to_numeric(temp_df_for_calc['Peso Unitário'], errors='coerce').fillna(0) * pd.to_numeric(temp_df_for_calc['Quantidade'], errors='coerce').fillna(0)).sum()
+                                # Como removemos Peso Unitário, usamos um peso padrão baseado no valor
+                                total_invoice_weight_kg_recalc = total_invoice_value_usd_recalc * 0.5  # Peso estimado baseado no valor
                                 
                                 st.session_state.total_invoice_value_usd = total_invoice_value_usd_recalc
                                 st.session_state.total_invoice_weight_kg = total_invoice_weight_kg_recalc
@@ -1361,182 +1483,182 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                                 st.session_state.show_add_item_popup = False
                                 st.rerun() # Força uma recarga para atualizar a tabela e totais
                                 
-                col_download_template, col_upload_excel = st.columns([0.2, 0.8])
-                with col_download_template:
-                    excel_template_data = _generate_items_excel_template()
-                    st.download_button(
-                        label="Baixar Template Itens", data=excel_template_data, file_name="template_itens_processo.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_items_excel_template"
-                    )
-                with col_upload_excel:
-                    uploaded_items_file = st.file_uploader("Upload Excel/CSV de Itens", type=["csv", "xls", "xlsx"], key="upload_items_file")
-                    # Corrigido: Usar uploaded_file.name e uploaded_file.size são robustos
-                    current_upload_key = (uploaded_items_file.name, uploaded_items_file.size) if uploaded_items_file else None
-                    
-                    if uploaded_items_file is not None and current_upload_key != st.session_state.get('last_processed_upload_key'): # Usar .get()
-                        if _import_items_from_excel(uploaded_items_file, current_fornecedor_context, current_invoice_n_context):
-                            st.session_state.last_processed_upload_key = current_upload_key
-                            st.rerun()
-                        else:
-                            st.session_state.last_processed_upload_key = None            
+                st.markdown("---")
+                st.subheader("Importar Itens do Excel (CSV/XLSX)") # Alterado o título
+                uploaded_file = st.file_uploader("Upload Excel (CSV/XLSX) de Pedido de Compra", type=["csv", "xlsx"], key="upload_excel_or_csv_file") # Alterado o tipo e a chave
+                current_file_upload_key = (uploaded_file.name, uploaded_file.size) if uploaded_file else None
 
+                # Lógica para recarregar itens após anexar o Excel
+                if uploaded_file is not None:
+                    # Se um novo arquivo foi carregado ou se o mesmo arquivo foi re-selecionado (para forçar re-processamento)
+                    if current_file_upload_key != st.session_state.get('uploaded_file_key') or \
+                       (current_file_upload_key == st.session_state.get('uploaded_file_key') and not st.session_state.get('process_items_data')):
+                        
+                        with st.spinner("Extraindo itens do Excel (CSV/XLSX)..."): # Alterado o texto
+                            extracted_items = _extract_items_from_excel_or_csv(uploaded_file) # Chamada da nova função
+                            if extracted_items:
+                                # Adiciona os itens extraídos do arquivo à lista de itens do processo
+                                # Limpa os itens existentes se for uma nova importação
+                                st.session_state.process_items_data = [] 
+                                st.session_state.process_items_data.extend(extracted_items)
+                                st.session_state.uploaded_file_key = current_file_upload_key # Atualiza a chave do upload
+                                _display_message_box(f"{len(extracted_items)} itens extraídos do arquivo e adicionados.", "success") # Alterado o texto
+                                st.rerun() # Força recarga para exibir os cards
+                            else:
+                                _display_message_box("Nenhum item encontrado no arquivo ou erro na extração.", "warning") # Alterado o texto
+                                st.session_state.uploaded_file_key = None # Não salva a chave se a extração falhou
+                                st.session_state.process_items_data = [] # Garante que a lista de itens esteja vazia
+                                st.rerun() # Força re-renderização para limpar a tabela
+                
                 st.markdown("---") 
 
-                df_items = pd.DataFrame(st.session_state.process_items_data)
-                # Garante que todas as colunas do schema estão presentes, preenchendo com None se ausentes
-                for col in DEFAULT_ITEM_SCHEMA.keys():
-                    if col not in df_items.columns:
-                        df_items[col] = None
-
-                # Não recalcula totais e impostos aqui, pois já é feito no _initialize_form_state e nos callbacks de adição/edição de item.
-                # Apenas usa os dados já processados em st.session_state.process_items_data
-                
-                if not df_items.empty:
+                # Implementação da visualização Mestre-Detalhe
+                if st.session_state.process_items_data:
+                    st.markdown('<div class="item-section">', unsafe_allow_html=True)
                     st.markdown("#### Itens do Processo:")
-                    df_items['Selecionar'] = False 
-                    df_items['NCM Formatado'] = df_items['NCM'].apply(lambda x: ncm_list_page.format_ncm_code(str(x)) if ncm_list_page and x is not None else str(x) if x is not None else '')
-
-                    display_cols = [
-                        "Selecionar", "Cobertura", "Código Interno", "Denominação do produto", "SKU",
-                        "Quantidade", "Valor Unitário", "NCM Formatado", "Valor total do item", "Peso Unitário", 
-                        "Estimativa_II_BR", "Estimativa_IPI_BR", "Estimativa_PIS_BR", "Estimativa_COFINS_BR", "Estimativa_ICMS_BR",
-                        "Frete_Rateado_USD", "Seguro_Rateado_BRL", "VLMD_Item"
-                    ]
-                    # Filtra colunas para exibir apenas as que realmente existem no DataFrame
-                    display_cols = [col for col in display_cols if col in df_items.columns]
-
-                    column_config_items = {
-                        "Selecionar": st.column_config.CheckboxColumn("Selecionar", default=False),
-                        "Cobertura": st.column_config.SelectboxColumn("Cobertura", options=["SIM", "NÃO"], width="small", disabled=True), 
-                        "Código Interno": st.column_config.TextColumn("Cód. Interno", width="small", disabled=True), 
-                        "Denominação do produto": st.column_config.TextColumn("Denominação", width="medium", disabled=True), 
-                        "SKU": st.column_config.TextColumn("SKU", width="small", disabled=True), 
-                        "Quantidade": st.column_config.NumberColumn("Qtd.", format="%d", width="small", disabled=True), 
-                        "Valor Unitário": st.column_config.NumberColumn("Preço (USD)", format="%.2f", width="small", disabled=True), 
-                        "NCM Formatado": st.column_config.TextColumn("NCM", width="small", disabled=True), 
-                        "Valor total do item": st.column_config.NumberColumn("Valor Total Item (USD)", format="%.2f", disabled=True, width="small"),
-                        "Peso Unitário": st.column_config.NumberColumn("Peso Unit. (KG)", format="%.4f", width="small", disabled=True), 
-                        "Estimativa_II_BR": st.column_config.NumberColumn("II (R$)", format="%.2f", disabled=True, width="small"),
-                        "Estimativa_IPI_BR": st.column_config.NumberColumn("IPI (R$)", format="%.2f", disabled=True, width="small"),
-                        "Estimativa_PIS_BR": st.column_config.NumberColumn("PIS (R$)", format="%.2f", disabled=True, width="small"),
-                        "Estimativa_COFINS_BR": st.column_config.NumberColumn("COFINS (R$)", format="%.2f", disabled=True, width="small"),
-                        "Estimativa_ICMS_BR": st.column_config.NumberColumn("ICMS (R$)", format="%.2f", disabled=True, width="small"),
-                        "Frete_Rateado_USD": st.column_config.NumberColumn("Frete Rat. (USD)", format="%.2f", disabled=True, width="small"),
-                        "Seguro_Rateado_BRL": st.column_config.NumberColumn("Seguro Rat. (R$)", format="%.2f", disabled=True, width="small"),
-                        "VLMD_Item": st.column_config.NumberColumn("VLMD (R$)", format="%.2f", disabled=True, width="small"),
-                    }
-                    # Filtra column_config_items para incluir apenas colunas que serão exibidas
-                    column_config_items = {k:v for k,v in column_config_items.items() if k in display_cols}
-
-
-                    selected_rows_data = st.data_editor(
-                        df_items[display_cols], column_config=column_config_items, num_rows="fixed", 
-                        hide_index=True, use_container_width=True, key="process_items_editor"
-                    )
                     
-                    st.session_state.selected_item_indices = [
-                        idx for idx, selected in enumerate(selected_rows_data['Selecionar']) if selected
-                    ]
+                    col_master, col_detail = st.columns([0.4, 0.6]) # Proporção para os painéis
 
-                    if st.session_state.selected_item_indices:
-                        with col_edit_item:
-                            if st.button("Editar Item", key="edit_selected_item_button"):
-                                if len(st.session_state.selected_item_indices) == 1:
-                                    st.session_state.item_to_edit_index = st.session_state.selected_item_indices[0]
-                                    st.session_state.show_edit_item_popup = True
-                                    st.session_state.show_add_item_popup = False 
-                                else:
-                                    _display_message_box("Selecione exatamente um item para editar.", "warning")
-                        with col_delete_item:
-                            if st.button("Excluir Item", key="delete_selected_item_button"):
-                                for idx in sorted(st.session_state.selected_item_indices, reverse=True):
-                                    del st.session_state.process_items_data[idx]
-                                st.session_state.selected_item_indices = [] 
-                                _display_message_box("Itens selecionados excluídos com sucesso!", "success")
-                                st.rerun()
+                    with col_master:
+                        st.markdown('<div class="item-list-radio">', unsafe_allow_html=True)
+                        st.markdown("##### Lista de Itens")
+                        # Cria um DataFrame para a lista mestre (apenas colunas essenciais para identificação)
+                        df_master_list = pd.DataFrame(st.session_state.process_items_data)
+                        
+                        # Adiciona uma coluna de seleção de rádio para selecionar o item
+                        # Usamos st.radio com o índice do item para seleção
+                        # Ajuste do título de cada item para Código, SKU, quantidade
+                        selected_item_index = st.radio(
+                            "Selecione um item para editar:",
+                            options=range(len(df_master_list)),
+                            format_func=lambda idx: f"Cód: {df_master_list.loc[idx, 'Código Interno']} | SKU: {df_master_list.loc[idx, 'SKU']} | Quant: {df_master_list.loc[idx, 'Quantidade']}",
+                            key=f"{form_state_key}_master_list_selection"
+                        )
 
-                    if st.session_state.get('show_edit_item_popup', False) and st.session_state.item_to_edit_index is not None:
-                        item_index = st.session_state.item_to_edit_index
-                        item_data = st.session_state.process_items_data[item_index]
+                        # Armazena o item selecionado no estado da sessão para o painel de detalhes
+                        if selected_item_index is not None:
+                            st.session_state.selected_item_for_detail_edit = st.session_state.process_items_data[selected_item_index]
+                        else:
+                            st.session_state.selected_item_for_detail_edit = None
+                        st.markdown('</div>', unsafe_allow_html=True)
 
-                        # Usando uuid para a chave do popover para evitar conflitos
-                        with st.popover(f"Editar Item: {item_data.get('Código Interno', 'N/A')}", key=f"edit_item_popover_{uuid.uuid4()}"):
-                            with st.form("edit_item_form_fixed", clear_on_submit=False):
-                                edited_codigo_interno = st.text_input("Código Interno", value=item_data.get("Código Interno", ""), key="edit_item_codigo_interno_popup")
-                                all_ncm_items = db_utils.selecionar_todos_ncm_itens()
-                                ncm_options = [""] + sorted([ncm_list_page.format_ncm_code(item['ncm_code']) for item in all_ncm_items]) if ncm_list_page else [""]
-                                current_ncm_display = ncm_list_page.format_ncm_code(str(item_data.get("NCM", ""))) if ncm_list_page else str(item_data.get("NCM", ""))
-                                edited_ncm_display = st.selectbox("NCM", options=ncm_options, index=ncm_options.index(current_ncm_display) if current_ncm_display in ncm_options else 0, key="edit_item_ncm_popup")
-                                edited_cobertura = st.selectbox("Cobertura", options=["SIM", "NÃO"], index=0 if item_data.get("Cobertura", "NÃO") == "SIM" else 1, key="edit_item_cobertura_popup")
-                                edited_sku = st.text_input("SKU", value=item_data.get("SKU", ""), key="edit_item_sku_popup")
-                                edited_quantidade = st.number_input("Quantidade", min_value=0, value=int(item_data.get("Quantidade", 0)), step=1, key="edit_item_quantidade_popup")
-                                edited_valor_unitario = st.number_input("Valor Unitário (USD)", min_value=0.0, value=float(item_data.get("Valor Unitário", 0.0)), format="%.2f", key="edit_item_valor_unitario_popup")
-                                edited_peso_unitario = st.number_input("Peso Unitário (KG)", min_value=0.0, value=float(item_data.get("Peso Unitário", 0.0)), format="%.4f", key="edit_item_peso_unitario_popup")
-                                edited_denominacao = st.text_input("Denominação do produto", value=item_data.get("Denominação do produto", ""), key="edit_item_denominacao_popup")
-                                edited_detalhamento = st.text_input("Detalhamento complementar do produto", value=item_data.get("Detalhamento complementar do produto", ""), key="edit_item_detalhamento_popup")
+                    with col_detail:
+                        st.markdown("##### Detalhes do Item Selecionado")
+                        if st.session_state.selected_item_for_detail_edit:
+                            current_item = st.session_state.selected_item_for_detail_edit
+                            item_idx = st.session_state.process_items_data.index(current_item) # Obter o índice do item
 
-                                if st.form_submit_button("Salvar Edição"):
-                                    # Atualiza o item diretamente na lista
-                                    st.session_state.process_items_data[item_index].update({
-                                        "Código Interno": edited_codigo_interno,
-                                        "NCM": re.sub(r'\D', '', edited_ncm_display) if edited_ncm_display else None,
-                                        "Cobertura": edited_cobertura, "SKU": edited_sku, "Quantidade": edited_quantidade,
-                                        "Valor Unitário": edited_valor_unitario, "Peso Unitário": edited_peso_unitario,
-                                        "Denominação do produto": edited_denominacao, "Detalhamento complementar do produto": edited_detalhamento,
-                                        "Valor total do item": edited_quantidade * edited_valor_unitario # Recalcula aqui
-                                    })
-                                    
-                                    # Recalcular totais e impostos após edição de item
-                                    temp_df_for_recalc = pd.DataFrame(st.session_state.process_items_data)
-                                    total_invoice_value_usd_recalc = temp_df_for_recalc["Valor total do item"].sum() if "Valor total do item" in temp_df_for_recalc.columns else 0.0
-                                    total_invoice_weight_kg_recalc = 0.0
-                                    if "Peso Unitário" in temp_df_for_recalc.columns and "Quantidade" in temp_df_for_recalc.columns:
-                                        total_invoice_weight_kg_recalc = (pd.to_numeric(temp_df_for_recalc['Peso Unitário'], errors='coerce').fillna(0) * pd.to_numeric(temp_df_for_calc['Quantidade'], errors='coerce').fillna(0)).sum()
-                                    
-                                    st.session_state.total_invoice_value_usd = total_invoice_value_usd_recalc
-                                    st.session_state.total_invoice_weight_kg = total_invoice_weight_kg_recalc
+                            with st.form(key=f"detail_edit_form_{item_idx}"):
+                                st.markdown('<div class="item-detail-form">', unsafe_allow_html=True)
+                                # Campos para preencher/selecionar manualmente
+                                current_item['Código Interno'] = st.text_input("Código Interno", value=current_item.get('Código Interno', ''), key=f"det_cod_int_{item_idx}")
+                                current_item['SKU'] = st.text_input("SKU", value=current_item.get('SKU', ''), key=f"det_sku_{item_idx}")
+                                current_item['Denominação do produto'] = st.text_area("Denominação do produto", value=current_item.get('Denominação do produto', ''), key=f"det_den_prod_{item_idx}")
+                                
+                                # NCM com busca automática
+                                current_ncm = current_item.get('NCM', '')
+                                formatted_ncm = ncm_list_page.format_ncm_code(str(current_ncm)) if ncm_list_page and current_ncm else ''
+                                new_ncm_input = st.text_input("NCM (formato xxxx.xx.xx):", value=formatted_ncm, key=f"det_ncm_{item_idx}")
+                                current_item['NCM'] = re.sub(r'\D', '', new_ncm_input) if new_ncm_input else None
+                                
+                                # Cobertura como Selectbox
+                                current_cobertura = current_item.get('Cobertura', 'NÃO')
+                                current_item['Cobertura'] = st.selectbox("Cobertura", options=["SIM", "NÃO"], index=0 if current_cobertura == "SIM" else 1, key=f"det_cob_{item_idx}")
 
-                                    # Recalcular impostos para CADA item (porque os totais podem ter mudado)
-                                    dolar_brl = st.session_state[form_state_key].get("Estimativa_Dolar_BRL", 0.0)
-                                    frete_usd = st.session_state[form_state_key].get('Estimativa_Frete_USD', 0.0)
-                                    seguro_brl = st.session_state[form_state_key].get('Estimativa_Seguro_BRL', 0.0)
-                                    
-                                    for item_in_list in st.session_state.process_items_data:
+                                current_item['Quantidade'] = st.number_input("Quantidade", value=int(current_item.get('Quantidade', 0)), min_value=0, step=1, key=f"det_quant_{item_idx}")
+                                current_item['Valor Unitário'] = st.number_input("Valor Unitário (USD)", value=float(current_item.get('Valor Unitário', 0.0)), format="%.2f", key=f"det_val_unit_{item_idx}")
+
+                                # Campos de impostos (somente leitura, calculados)
+                                st.markdown('<div class="tax-info">', unsafe_allow_html=True)
+                                st.markdown(f"**II (R$):** {current_item.get('Estimativa_II_BR', 0.0):.2f}")
+                                st.markdown(f"**IPI (R$):** {current_item.get('Estimativa_IPI_BR', 0.0):.2f}")
+                                st.markdown(f"**PIS (R$):** {current_item.get('Estimativa_PIS_BR', 0.0):.2f}")
+                                st.markdown(f"**COFINS (R$):** {current_item.get('Estimativa_COFINS_BR', 0.0):.2f}")
+                                st.markdown(f"**ICMS (R$):** {current_item.get('Estimativa_ICMS_BR', 0.0):.2f}")
+                                st.markdown(f"**VLMD (R$):** {current_item.get('VLMD_Item', 0.0):.2f}")
+                                st.markdown(f"**Frete Rateado (USD):** {current_item.get('Frete_Rateado_USD', 0.0):.2f}")
+                                st.markdown(f"**Seguro Rateado (BRL):** {current_item.get('Seguro_Rateado_BRL', 0.0):.2f}")
+                                st.markdown(f"**Valor Total do Item:** {current_item.get('Valor total do item', 0.0):.2f}")
+                                st.markdown('</div>', unsafe_allow_html=True)
+                                
+                                st.markdown('</div>', unsafe_allow_html=True)  # Fecha item-detail-form
+                                st.markdown('<div class="item-buttons">', unsafe_allow_html=True)
+                                col_save_item, col_cancel_item, col_delete_item_detail = st.columns(3) # Adicionado col_delete_item_detail
+                                with col_save_item:
+                                    if st.form_submit_button("Salvar Item"):
+                                        # Recalcular valores e impostos para o item editado
+                                        # Automação da busca de NCM/Descrição
+                                        if current_item.get('NCM'):
+                                            ncm_info = db_utils.get_ncm_item_by_ncm_code(current_item['NCM'])
+                                            if ncm_info:
+                                                current_item['Denominação do produto'] = ncm_info.get('descricao_item', current_item.get('Denominação do produto'))
+                                                logger.info(f"[Editar Item] NCM {current_item['NCM']} encontrado. Descrição: {ncm_info.get('descricao_item')}")
+                                            else:
+                                                logger.warning(f"[Editar Item] NCM {current_item['NCM']} não encontrado no banco de dados")
+                                        elif current_item.get('Denominação do produto'):
+                                            ncm_info_by_desc = db_utils.search_ncm_by_description(current_item['Denominação do produto'])
+                                            if ncm_info_by_desc:
+                                                current_item['NCM'] = ncm_info_by_desc.get('ncm_code', current_item.get('NCM'))
+                                                current_item['Denominação do produto'] = ncm_info_by_desc.get('descricao_item', current_item.get('Denominação do produto'))
+                                                logger.info(f"[Editar Item] Busca por descrição encontrou NCM {ncm_info_by_desc.get('ncm_code')}")
+                                            else:
+                                                logger.warning(f"[Editar Item] Nenhum NCM encontrado para descrição: {current_item['Denominação do produto']}")
+
+                                        current_item["Valor total do item"] = current_item["Quantidade"] * current_item["Valor Unitário"]
+                                        
+                                        dolar_brl = st.session_state[form_state_key].get("Estimativa_Dolar_BRL", 0.0)
+                                        frete_usd = st.session_state[form_state_key].get('Estimativa_Frete_USD', 0.0)
+                                        seguro_brl = st.session_state[form_state_key].get('Estimativa_Seguro_BRL', 0.0)
+                                        
+                                        # Recalcular totais globais para todos os itens
+                                        temp_df_for_calc = pd.DataFrame(st.session_state.process_items_data)
+                                        total_invoice_value_usd_recalc = temp_df_for_calc["Valor total do item"].sum() if "Valor total do item" in temp_df_for_calc.columns else 0.0
+                                        # Como removemos Peso Unitário, usamos um peso padrão baseado no valor
+                                        total_invoice_weight_kg_recalc = total_invoice_value_usd_recalc * 0.5  # Peso estimado baseado no valor
+
                                         calculate_item_taxes_and_values(
-                                            item_in_list, dolar_brl, total_invoice_value_usd_recalc, total_invoice_weight_kg_recalc,
+                                            current_item, dolar_brl, total_invoice_value_usd_recalc, total_invoice_weight_kg_recalc,
                                             frete_usd, seguro_brl
                                         )
-
-                                    _display_message_box("Item editado com sucesso!", "success")
-                                    st.session_state.show_edit_item_popup = False
-                                    st.session_state.item_to_edit_index = None
-                                    st.session_state.selected_item_indices = []
-                                    st.rerun() # Força uma recarga para atualizar a tabela e totais
-                                    
-                                if st.form_submit_button("Cancelar"):
-                                    st.session_state.show_edit_item_popup = False
-                                    st.session_state.item_to_edit_index = None
-                                    st.session_state.selected_item_indices = []
-                                    st.rerun()
-
-                    # Recalcula totais a serem exibidos no resumo, usando os valores atuais no session state
-                    total_itens_usd_current_display = st.session_state.get('total_invoice_value_usd', 0.0)
-                    total_itens_weight_kg_current_display = st.session_state.get('total_invoice_weight_kg', 0.0)
-
-                    st.markdown("---")
-                    st.subheader("Resumo de Itens para Cálculos")
-                    st.write(f"Valor Total dos Itens (USD): **{total_itens_usd_current_display:,.2f}**".replace('.', '#').replace(',', '.').replace('#', ','))
-                    st.write(f"Peso Total dos Itens (KG): **{total_itens_weight_kg_current_display:,.4f}**".replace('.', '#').replace(',', '.').replace('#', ','))
-
+                                        st.session_state.process_items_data[item_idx] = current_item # Atualiza o item na lista principal
+                                        _display_message_box("Item salvo com sucesso!", "success")
+                                        st.session_state.selected_item_for_detail_edit = None # Limpa a seleção
+                                        st.rerun() # Força a re-renderização para atualizar a lista mestre
+                                with col_cancel_item:
+                                    if st.form_submit_button("Cancelar"):
+                                        st.session_state.selected_item_for_detail_edit = None # Limpa a seleção
+                                        st.rerun()
+                                with col_delete_item_detail: # NOVO: Botão de exclusão
+                                    if st.form_submit_button("Excluir Item"):
+                                        # Lógica para excluir o item
+                                        if item_idx is not None:
+                                            del st.session_state.process_items_data[item_idx]
+                                            _display_message_box("Item excluído com sucesso!", "success")
+                                            st.session_state.selected_item_for_detail_edit = None # Limpa a seleção
+                                            st.rerun() # Força a re-renderização
+                                        else:
+                                            _display_message_box("Nenhum item selecionado para exclusão.", "warning")
+                                st.markdown('</div>', unsafe_allow_html=True)  # Fecha item-buttons
+                        else:
+                            st.info("Selecione um item na lista à esquerda para ver e editar seus detalhes.")
+                    st.markdown('</div>', unsafe_allow_html=True)  # Fecha item-section
                 else:
-                    st.info("Nenhum item adicionado a este processo ainda. Use as opções acima para adicionar.")
+                    st.info("Nenhum item adicionado a este processo ainda. Use o upload do Excel (CSV/XLSX) ou o botão 'Adicionar Item Manualmente'.") # Alterado o texto
 
             elif tab_name == "Valores e Estimativas":
                 st.subheader("Valores e Estimativas")
                 
                 # Obtém os totais dos itens do st.session_state, que já foram calculados em _initialize_form_state ou ao adicionar/editar itens.
                 total_itens_usd_from_session = st.session_state.get('total_invoice_value_usd', 0.0)
-                dolar_brl_current = float(st.session_state[form_state_key].get("Estimativa_Dolar_BRL", 0.0) or 0.0)
+                
+                # Obtém o valor do câmbio, usando PTAX Venda se for 0.0 ou não existir
+                dolar_brl_current = st.session_state[form_state_key].get("Estimativa_Dolar_BRL", 0.0)
+                if not dolar_brl_current or dolar_brl_current == 0.0:
+                    dolar_brl_current = get_current_dolar_ptax_venda()
+                    st.session_state[form_state_key]["Estimativa_Dolar_BRL"] = dolar_brl_current
+                    logger.info(f"[Valores e Estimativas] Atualizando câmbio para PTAX Venda: {dolar_brl_current}")
+                dolar_brl_current = float(dolar_brl_current)
+                logger.info(f"[Valores e Estimativas] Câmbio atual: {dolar_brl_current}")
                 
                 # Atualiza o Valor_USD no estado do formulário com o total calculado
                 st.session_state[form_state_key]["Valor_USD"] = total_itens_usd_from_session 
@@ -1544,33 +1666,32 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                 # Campos de Valores e Estimativas
                 frete_usd_current = float(st.session_state[form_state_key].get("Estimativa_Frete_USD", 0.0) or 0.0)
                 seguro_brl_current = float(st.session_state[form_state_key].get("Estimativa_Seguro_BRL", 0.0) or 0.0)
-                icms_br_manual_estimate_current = float(st.session_state[form_state_key].get("Estimativa_ICMS_BR", 0.0) or 0.0)
                 
                 col_1, col_2 = st.columns(2)
 
                 with col_1:
                     # Input para Dólar/BRL, e os demais são exibição ou entrada
                     st.session_state[form_state_key]["Estimativa_Dolar_BRL"] = st.number_input(
-                        "Cambio Estimado (R$):", value=dolar_brl_current, format="%.2f", key=f"{form_state_key}_Estimativa_Dolar_BRL"
+                        f"{campos_config_tabs['Valores e Estimativas']['Estimativa_Dolar_BRL']['icon']} {campos_config_tabs['Valores e Estimativas']['Estimativa_Dolar_BRL']['label']}", 
+                        value=dolar_brl_current, format="%.2f", key=f"{form_state_key}_Estimativa_Dolar_BRL"
                     )
                     st.number_input(
-                        "Valor (USD):", value=float(st.session_state[form_state_key]["Valor_USD"] or 0.0), format="%.2f",
+                        f"{campos_config_tabs['Valores e Estimativas']['Valor_USD']['icon']} {campos_config_tabs['Valores e Estimativas']['Valor_USD']['label']}", 
+                        value=float(st.session_state[form_state_key]["Valor_USD"] or 0.0), format="%.2f",
                         key=f"{form_state_key}_Valor_USD_display", disabled=True
                     )
                     st.session_state[form_state_key]["Estimativa_Frete_USD"] = st.number_input(
-                        "Estimativa de Frete (USD):", value=frete_usd_current, format="%.2f", key=f"{form_state_key}_Estimativa_Frete_USD"
+                        f"{campos_config_tabs['Valores e Estimativas']['Estimativa_Frete_USD']['icon']} {campos_config_tabs['Valores e Estimativas']['Estimativa_Frete_USD']['label']}", 
+                        value=frete_usd_current, format="%.2f", key=f"{form_state_key}_Estimativa_Frete_USD"
                     )
                     st.session_state[form_state_key]["Estimativa_Seguro_BRL"] = st.number_input(
-                        "Estimativa Seguro (R$):", value=seguro_brl_current, format="%.2f", key=f"{form_state_key}_Estimativa_Seguro_BRL"
-                    )
-                    
-                    st.session_state[form_state_key]["Estimativa_ICMS_BR"] = st.number_input(
-                        "Estimativa de ICMS (R$ - Manual):", value=icms_br_manual_estimate_current, format="%.2f",
-                        key=f"{form_state_key}_Estimativa_ICMS_BR"
+                        f"{campos_config_tabs['Valores e Estimativas']['Estimativa_Seguro_BRL']['icon']} {campos_config_tabs['Valores e Estimativas']['Estimativa_Seguro_BRL']['label']}", 
+                        value=seguro_brl_current, format="%.2f", key=f"{form_state_key}_Estimativa_Seguro_BRL"
                     )
 
                     st.session_state[form_state_key]["Estimativa_Impostos_BR"] = st.number_input(
-                        "Estimativa Impostos (Antigo):", value=float(st.session_state[form_state_key].get("Estimativa_Impostos_BR", 0.0) or 0.0), 
+                        f"{campos_config_tabs['Valores e Estimativas']['Estimativa_Impostos_BR']['icon']} {campos_config_tabs['Valores e Estimativas']['Estimativa_Impostos_BR']['label']}:", 
+                        value=float(st.session_state[form_state_key].get("Estimativa_Impostos_BR", 0.0) or 0.0), 
                         format="%.2f", key=f"{form_state_key}_Estimativa_Impostos_BR", disabled=True,
                         help="Campo de impostos para compatibilidade com versões antigas do DB."
                     )
@@ -1590,18 +1711,23 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                     st.session_state[form_state_key]['Estimativa_IPI_BR'] = total_ipi
                     st.session_state[form_state_key]['Estimativa_PIS_BR'] = total_pis
                     st.session_state[form_state_key]['Estimativa_COFINS_BR'] = total_cofins
+                    st.session_state[form_state_key]['Estimativa_ICMS_BR'] = total_icms_calculated_sum
                     
-                    # Soma total de impostos
-                    total_impostos_reais = total_ii + total_ipi + total_pis + total_cofins + st.session_state[form_state_key].get("Estimativa_ICMS_BR", 0.0) # Usa o ICMS manual
+                    # Soma total de impostos (agora usando o ICMS calculado dos itens)
+                    total_impostos_reais = total_ii + total_ipi + total_pis + total_cofins + total_icms_calculated_sum
                     st.session_state[form_state_key]['Estimativa_Impostos_Total'] = total_impostos_reais
 
                 with col_2:
-                    st.number_input("Estimativa de II (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_II_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_II_BR_calc")
-                    st.number_input("Estimativa de IPI (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_IPI_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_IPI_BR_calc")
-                    st.number_input("Estimativa de PIS (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_PIS_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_PIS_BR_calc")
-                    st.number_input("Estimativa de COFINS (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_COFINS_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_COFINS_BR_calc")
-                    st.number_input("Estimativa Impostos (R$):", value=st.session_state[form_state_key].get('Estimativa_Impostos_Total', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_Impostos_Total_calc")
+                    st.number_input(f"{campos_config_tabs['Valores e Estimativas']['Estimativa_II_BR']['icon']} Estimativa de II (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_II_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_II_BR_calc")
+                    st.number_input(f"{campos_config_tabs['Valores e Estimativas']['Estimativa_IPI_BR']['icon']} Estimativa de IPI (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_IPI_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_IPI_BR_calc")
+                    st.number_input(f"{campos_config_tabs['Valores e Estimativas']['Estimativa_PIS_BR']['icon']} Estimativa de PIS (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_PIS_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_PIS_BR_calc")
+                    st.number_input(f"{campos_config_tabs['Valores e Estimativas']['Estimativa_COFINS_BR']['icon']} Estimativa de COFINS (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_COFINS_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_COFINS_BR_calc")
+                    st.number_input(f"{campos_config_tabs['Valores e Estimativas']['Estimativa_ICMS_BR']['icon']} Estimativa de ICMS (R$ - Calculado):", value=st.session_state[form_state_key].get('Estimativa_ICMS_BR', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_ICMS_BR_calc")
+                    st.number_input(f"{campos_config_tabs['Valores e Estimativas']['Estimativa_Impostos_Total']['icon']} Estimativa Impostos (R$):", value=st.session_state[form_state_key].get('Estimativa_Impostos_Total', 0.0), format="%.2f", disabled=True, key=f"display_{form_state_key}_Impostos_Total_calc")
                     st.caption("Os valores acima são a soma dos impostos calculados para cada item com base no NCM.")
+                
+                # Recalcular automaticamente todos os itens se os campos relevantes mudarem
+                _recalculate_all_items_if_needed(form_state_key)
 
             elif tab_name == "Status Operacional":
                 st.subheader("Status Operacional")
@@ -1610,6 +1736,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                 # A configuração atual reflete que esses campos são para "Dados Gerais"
                 for field_name, config in campos_config_tabs[tab_name].items():
                     current_value = st.session_state[form_state_key].get(field_name)
+                    label_with_icon = f"{config.get('icon', '')} {config['label']}" # Adiciona ícone ao label
 
                     if config["type"] == "date":
                         current_value_dt = None
@@ -1621,7 +1748,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                                     current_value_dt = current_value.date()
                             except ValueError:
                                 current_value_dt = None
-                        widget_value = st.date_input(config["label"], value=current_value_dt, key=f"{form_state_key}_{field_name}", format="DD/MM/YYYY")
+                        widget_value = st.date_input(label_with_icon, value=current_value_dt, key=f"{form_state_key}_{field_name}", format="DD/MM/YYYY")
                         st.session_state[form_state_key][field_name] = widget_value.strftime("%Y-%m-%d") if widget_value else None
                     elif config["type"] == "dropdown":
                         options = config["values"]
@@ -1631,31 +1758,15 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                         elif current_value is not None and str(current_value).strip() != "" and current_value not in options:
                             options = [current_value] + options
                             default_index = 0
-                        widget_value = st.selectbox(config["label"], options=options, index=default_index, key=f"{form_state_key}_{field_name}")
+                        widget_value = st.selectbox(label_with_icon, options=options, index=default_index, key=f"{form_state_key}_{field_name}")
                         st.session_state[form_state_key][field_name] = widget_value if widget_value else None
                     else:
-                        widget_value = st.text_input(config["label"], value=current_value if current_value is not None else "", key=f"{form_state_key}_{field_name}")
+                        widget_value = st.text_input(label_with_icon, value=current_value if current_value is not None else "", key=f"{form_state_key}_{field_name}")
                         st.session_state[form_state_key][field_name] = widget_value if widget_value else None
 
     st.markdown("---")
     
     # Container para observação com estilo melhorado
-    st.markdown("""
-    <style>
-        .observation-container {
-            background-color: #f8f9fa;
-            border-radius: 5px;
-            padding: 10px;
-            margin-bottom: 20px;
-        }
-        .observation-title {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 10px;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
     st.markdown("<div class='observation-container'>", unsafe_allow_html=True)
     st.markdown("<div class='observation-title'>📝 Observações do Processo</div>", unsafe_allow_html=True)
     st.session_state[form_state_key]["Observacao"] = st.text_area(
@@ -1673,7 +1784,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
         col_save, col_cancel, col_delete = st.columns([0.4, 0.3, 0.3]) # Layout mais equilibrado
 
         with col_save:
-            if st.form_submit_button("Salvar Processo"):
+            if st.form_submit_button("💾 Salvar Processo"): # Ícone adicionado
                 edited_data_to_save = {}
                 for tab_name, tab_config in campos_config_tabs.items():
                     if "col1" in tab_config:
@@ -1747,7 +1858,7 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
                 st.rerun()
 
         with col_cancel:
-            if st.form_submit_button("Cancelar"):
+            if st.form_submit_button("❌ Cancelar"): # Ícone adicionado
                 st.session_state.current_page = "Follow-up Importação"
                 # Limpa apenas os estados de sessão específicos deste formulário
                 if form_state_key in st.session_state:
@@ -1761,14 +1872,14 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
 
         with col_delete:
             if not is_new_process:
-                confirm_delete = st.checkbox("Confirmar exclusão", key=f"confirm_delete_process_{process_id}")
-                if st.form_submit_button("Excluir Processo"):
+                confirm_delete = st.checkbox("✅ Confirmar exclusão", key=f"confirm_delete_process_{process_id}") # Ícone adicionado
+                if st.form_submit_button("🗑️ Excluir Processo"): # Ícone adicionado
                     if confirm_delete:
-                        _display_message_box("A funcionalidade de exclusão direta por este formulário está temporariamente desabilitada. Por favor, use o botão de exclusão na tela principal de Follow-up.", "warning")
+                        _display_message_box("⚠️ A funcionalidade de exclusão direta por este formulário está temporariamente desabilitada. Por favor, use o botão de exclusão na tela principal de Follow-up.", "warning")
                     else:
-                        st.warning("Marque a caixa de confirmação para excluir o processo.")
+                        st.warning("⚠️ Marque a caixa de confirmação para excluir o processo.")
             else:
-                st.info("Excluir disponível após salvar o processo.")
+                st.info("🔒 Excluir disponível após salvar o processo.")
         
     if linked_di_id is not None and linked_di_number:
         st.markdown("---")
@@ -1785,3 +1896,71 @@ def show_process_form_page(process_identifier: Optional[Any] = None, reload_proc
         st.markdown("---")
         st.warning(f"🔗 DI vinculada (ID: {linked_di_id}) não encontrada no banco de dados de Declarações de Importação.")
 
+
+def _recalculate_all_items_if_needed(form_state_key: str):
+    """
+    Recalcula automaticamente todos os itens quando valores que afetam os cálculos mudarem.
+    Garante que sempre use as alíquotas mais atualizadas do Firestore.
+    """
+    if not st.session_state.process_items_data:
+        return
+    
+    # Valores atuais dos campos que afetam os cálculos
+    current_dolar_brl = st.session_state[form_state_key].get("Estimativa_Dolar_BRL", 0.0)
+    current_frete_usd = st.session_state[form_state_key].get("Estimativa_Frete_USD", 0.0)
+    current_seguro_brl = st.session_state[form_state_key].get("Estimativa_Seguro_BRL", 0.0)
+    
+    # Valores anteriores (para detectar mudanças)
+    cache_key = f"{form_state_key}_last_calc_values"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = {}
+    
+    last_values = st.session_state[cache_key]
+    
+    # Verifica se houve mudanças nos valores que afetam os cálculos
+    values_changed = (
+        last_values.get("dolar_brl") != current_dolar_brl or
+        last_values.get("frete_usd") != current_frete_usd or
+        last_values.get("seguro_brl") != current_seguro_brl
+    )
+    
+    if values_changed:
+        logger.info(f"[_recalculate_all_items_if_needed] Recalculando todos os itens devido a mudanças nos valores base")
+        
+        # Recalcula totais
+        temp_df = pd.DataFrame(st.session_state.process_items_data)
+        total_invoice_value_usd = temp_df["Valor total do item"].sum() if "Valor total do item" in temp_df.columns else 0.0
+        total_invoice_weight_kg = total_invoice_value_usd * 0.5  # Peso estimado baseado no valor
+        
+        # Recalcula impostos para todos os itens - sempre busca alíquotas atualizadas
+        for item in st.session_state.process_items_data:
+            calculate_item_taxes_and_values(
+                item, current_dolar_brl, total_invoice_value_usd, total_invoice_weight_kg,
+                current_frete_usd, current_seguro_brl
+            )
+        
+        # Atualiza totais globais de impostos
+        total_ii = total_ipi = total_pis = total_cofins = total_icms = 0.0
+        for item in st.session_state.process_items_data:
+            total_ii += item.get('Estimativa_II_BR', 0.0)
+            total_ipi += item.get('Estimativa_IPI_BR', 0.0)
+            total_pis += item.get('Estimativa_PIS_BR', 0.0)
+            total_cofins += item.get('Estimativa_COFINS_BR', 0.0)
+            total_icms += item.get('Estimativa_ICMS_BR', 0.0)
+        
+        # Atualiza os totais no estado do formulário
+        st.session_state[form_state_key]['Estimativa_II_BR'] = total_ii
+        st.session_state[form_state_key]['Estimativa_IPI_BR'] = total_ipi
+        st.session_state[form_state_key]['Estimativa_PIS_BR'] = total_pis
+        st.session_state[form_state_key]['Estimativa_COFINS_BR'] = total_cofins
+        st.session_state[form_state_key]['Estimativa_ICMS_BR'] = total_icms
+        st.session_state[form_state_key]['Estimativa_Impostos_Total'] = total_ii + total_ipi + total_pis + total_cofins + total_icms
+        
+        # Atualiza cache dos valores
+        st.session_state[cache_key] = {
+            "dolar_brl": current_dolar_brl,
+            "frete_usd": current_frete_usd,
+            "seguro_brl": current_seguro_brl
+        }
+        
+        logger.info(f"[_recalculate_all_items_if_needed] Recálculo concluído. Totais atualizados: II=R${total_ii:.2f}, IPI=R${total_ipi:.2f}, PIS=R${total_pis:.2f}, COFINS=R${total_cofins:.2f}, ICMS=R${total_icms:.2f}")

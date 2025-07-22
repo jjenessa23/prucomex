@@ -404,9 +404,10 @@ def _apply_in_memory_filters_cached(
     # OTIMIZAÇÃO: Usa máscaras booleanas em vez de filtros em cascata
     mask = pd.Series(True, index=df_filtered_in_memory.index)
     
-    # Filtro de arquivados
+    # Filtro de arquivados - Por padrão exclui arquivados, exceto se estiverem explicitamente selecionados
+    # ou se há uma pesquisa ativa (que pode incluir processos arquivados)
     if 'Arquivados' not in selected_statuses and not is_main_process_name_search_active:
-        mask &= df_filtered_in_memory['Status_Arquivado'].isin([None, "Não Arquivado"])
+        mask &= df_filtered_in_memory['Status_Arquivado'].isin([None, "Não Arquivado", "", pd.NA]) | df_filtered_in_memory['Status_Arquivado'].isna()
     
     # Filtro de status gerais
     if 'Todos' not in selected_statuses:
@@ -538,60 +539,85 @@ def _prepare_expander_data_cached(
 ) -> List[Dict[str, Any]]:
     """
     Prepara e organiza os dados para a exibição nos expanders, incluindo agrupamento por status e ordenação.
-    Esta função é agora cacheadas e só re-executa se os argumentos (filtros ou timestamp de atualização) mudarem.
+    Combina processos não consolidados e grupos consolidados em uma única lista ordenada.
     """
-    # Usar a ordem de status global definida na constante
     current_custom_status_order = list(CUSTOM_STATUS_ORDER)
     status_order_map = {status: i for i, status in enumerate(current_custom_status_order)}
 
-    processes_by_status_non_consolidated = {}
-    # Preserva a ordem dos dados já ordenados por Status → Previsão Pichau → Navio → Modal
-    for row_dict_item in non_consolidated_data: # Renomeado para evitar conflito
-        status = row_dict_item.get('Status_Geral', 'Sem Status')
-        # Adiciona status dinamicamente se não estiver na ordem personalizada (para evitar KeyError)
-        if status not in current_custom_status_order:
-            current_custom_status_order.append(status) # Adiciona à lista de ordenação para mapeamento
-            status_order_map[status] = len(current_custom_status_order) - 1 # Mapeia para o final
-
-        if status not in processes_by_status_non_consolidated:
-            processes_by_status_non_consolidated[status] = []
-        processes_by_status_non_consolidated[status].append(row_dict_item)
+    # Combina processos não consolidados e grupos consolidados em uma única lista
+    all_items_combined = []
     
-    consolidated_groups_by_status = {}
+    # Adiciona processos não consolidados
+    for process in non_consolidated_data:
+        all_items_combined.append({
+            'type': 'process',
+            'data': process,
+            'status': process.get('Status_Geral', 'Sem Status'),
+            'previsao_pichau': process.get('Previsao_Pichau', ''),
+            'navio': process.get('Navio', ''),
+            'modal': process.get('Modal', ''),
+            'processo_novo': process.get('Processo_Novo', '')
+        })
+    
+    # Adiciona grupos consolidados
     for group in consolidated_groups_data:
-        principal_process_data = next((m for m in group['members_data'] if str(m.get('id')) == str(group['principal_id'])), None)
+        principal_process_data = next(
+            (m for m in group['members_data'] if str(m.get('id')) == str(group['principal_id'])), 
+            None
+        )
         if principal_process_data:
-            group_status = principal_process_data.get('Status_Geral', 'Sem Status')
-            # Adiciona status dinamicamente se não estiver na ordem personalizada
-            if group_status not in current_custom_status_order:
-                current_custom_status_order.append(group_status)
-                status_order_map[group_status] = len(current_custom_status_order) - 1
-
-            if group_status not in consolidated_groups_by_status:
-                consolidated_groups_by_status[group_status] = []
-            consolidated_groups_by_status[group_status].append(group)
+            all_items_combined.append({
+                'type': 'consolidated_group',
+                'data': {'_is_consolidated_group': True, 'group_data': group},
+                'status': principal_process_data.get('Status_Geral', 'Sem Status'),
+                'previsao_pichau': principal_process_data.get('Previsao_Pichau', ''),
+                'navio': principal_process_data.get('Navio', ''),
+                'modal': principal_process_data.get('Modal', ''),
+                'processo_novo': principal_process_data.get('Processo_Novo', '')
+            })
     
-    # Combina processos não consolidados e grupos consolidados sob o mesmo status
-    for status, groups in consolidated_groups_by_status.items():
-        if status not in processes_by_status_non_consolidated:
-            processes_by_status_non_consolidated[status] = []
-        for group in groups:
-            processes_by_status_non_consolidated[status].append({'_is_consolidated_group': True, 'group_data': group})
-
+    # Ordena todos os itens juntos
+    def sort_key(item):
+        status_order = status_order_map.get(item.get('status', 'Sem Status'), len(current_custom_status_order))
+        
+        previsao_value = item.get('previsao_pichau', '')
+        previsao_dt = pd.to_datetime(previsao_value, errors='coerce')
+        if pd.isna(previsao_dt):
+            previsao_dt = pd.Timestamp.max
+        
+        # Trata valores None e garante que todos os valores sejam strings
+        navio = str(item.get('navio', '')) if item.get('navio') is not None else ''
+        modal = str(item.get('modal', '')) if item.get('modal') is not None else ''
+        processo_novo = str(item.get('processo_novo', '')) if item.get('processo_novo') is not None else ''
+        
+        return (status_order, previsao_dt, navio, modal, processo_novo)
+    
+    all_items_combined.sort(key=sort_key)
+    
+    # Reagrupa por status mantendo a ordem
+    processes_by_status = {}
+    for item in all_items_combined:
+        status = item['status']
+        if status not in current_custom_status_order:
+            current_custom_status_order.append(status)
+            status_order_map[status] = len(current_custom_status_order) - 1
+        
+        if status not in processes_by_status:
+            processes_by_status[status] = []
+        processes_by_status[status].append(item['data'])
+    
+    # Constrói resultado final
     all_expander_keys_with_sort_data = []
-    # Usar a ordem de status final (que pode ter sido modificada dinamicamente)
-    for status in current_custom_status_order: 
-        if status in processes_by_status_non_consolidated: # Verifica se o status tem dados associados
+    for status in current_custom_status_order:
+        if status in processes_by_status:
             all_expander_keys_with_sort_data.append({
                 'type': 'status_group',
                 'sort_key': status_order_map.get(status, len(current_custom_status_order)),
                 'status': status,
-                'processes_and_groups': processes_by_status_non_consolidated[status]  # Mudança: usar 'processes_and_groups' em vez de 'data'
+                'processes_and_groups': processes_by_status[status]
             })
 
-    # Retorna a lista final de informações dos expanders, já ordenada
-    sorted_all_expander_keys = sorted(all_expander_keys_with_sort_data, key=lambda x: x['sort_key'])
-    return sorted_all_expander_keys
+    return sorted(all_expander_keys_with_sort_data, key=lambda x: x['sort_key'])
 
 
 def _fetch_initial_processes():
@@ -648,8 +674,10 @@ def _fetch_initial_processes_optimized():
                 st.progress(0.1 * batch_num, text=f"Carregando batch {batch_num+1}/{MAX_BATCHES}")
         
         # Busca o próximo batch de processos
+        status_filtro = st.session_state.get('followup_selected_statuses', ['Todos'])
+        
         batch_processes, has_more = db_manager.obter_processos_filtrados(
-            status_filtro=st.session_state.get('followup_selected_statuses', ['Todos']),
+            status_filtro=status_filtro,
             termos_pesquisa=st.session_state.get('followup_popup_search_terms', {}),
             limit=BATCH_SIZE,
             start_after_doc_id=last_doc_id
@@ -731,8 +759,10 @@ def _fetch_initial_processes_simple():
             return 0
 
         # Carrega TODOS os processos de uma vez (limit=None)
+        status_filtro = st.session_state.get('followup_selected_statuses', ['Todos'])
+        
         all_processes, _ = db_manager.obter_processos_filtrados(
-            status_filtro=st.session_state.get('followup_selected_statuses', ['Todos']),
+            status_filtro=status_filtro,
             termos_pesquisa=st.session_state.get('followup_popup_search_terms', {}),
             limit=None, # Carrega todos os processos
             start_after_doc_id=None
@@ -1448,7 +1478,7 @@ def _optimized_reload_after_process_edit(process_identifier: Any):
     _call_apply_filters_and_update_session_state() # Re-aplica filtros e prepara UI
 
 def _render_consolidated_group_card(group_data: Dict[str, Any], unique_id_for_key: str):
-    """Renderiza um card para um grupo consolidado com informações agregadas e layout similar ao card individual."""
+    """Renderiza um grupo consolidado com cards individuais para cada membro, similar à imagem."""
     principal_id = group_data.get('principal_id', 'N/A')
     members_data = group_data.get('members_data', [])
     
@@ -1458,129 +1488,42 @@ def _render_consolidated_group_card(group_data: Dict[str, Any], unique_id_for_ke
     group_status = principal_process_data.get('Status_Geral', 'Consolidado') if principal_process_data else 'Consolidado'
     previsao_pichau = _format_date_display(principal_process_data.get('Previsao_Pichau')) if principal_process_data else 'N/A'
     
-    display_status, status_display_color = _format_status_display(group_status, 'Não Arquivado') # Grupos não são "arquivados" diretamente
-
-    # Agregação de dados dos membros
-    total_quantidade = sum(safe_float(member.get('Quantidade', 0)) for member in members_data)
-    total_valor_usd = sum(safe_float(member.get('Valor_USD', 0.0)) for member in members_data)
-    
-    unique_fornecedores = set(member.get('Fornecedor', 'N/A') for member in members_data if member.get('Fornecedor'))
-    fornecedores_display = ", ".join(unique_fornecedores) if unique_fornecedores else "N/A"
-    
-    unique_invoices = set(member.get('N_Invoice', 'N/A') for member in members_data if member.get('N_Invoice'))
-    invoices_display = ", ".join(unique_invoices) if unique_invoices else "N/A"
-
-    earliest_data_compra = None
-    earliest_data_embarque = None
-    
-    for member in members_data:
-        if member.get('Data_Compra'):
-            try:
-                current_date = datetime.strptime(member['Data_Compra'], "%Y-%m-%d")
-                if earliest_data_compra is None or current_date < earliest_data_compra:
-                    earliest_data_compra = current_date
-            except ValueError:
-                pass
-        if member.get('Data_Embarque'):
-            try:
-                current_date = datetime.strptime(member['Data_Embarque'], "%Y-%m-%d")
-                if earliest_data_embarque is None or current_date < earliest_data_embarque:
-                    earliest_data_embarque = current_date
-            except ValueError:
-                pass
-
-    earliest_data_compra_display = _format_date_display(earliest_data_compra.strftime("%Y-%m-%d")) if earliest_data_compra else 'N/A'
-    earliest_data_embarque_display = _format_date_display(earliest_data_embarque.strftime("%Y-%m-%d")) if earliest_data_embarque else 'N/A'
-
-    # Mock de dados de checklist para o grupo consolidado (poderiam ser agregados dos membros)
-    # Para simplificar, vamos usar um status padrão para o grupo consolidado
-    pago = "➖"
-    docs_revisados = "➖"
-    conhecimento_embarque = "➖"
-    descricao_feita = "➖"
-    descricao_enviada = "➖"
-    nota_feita = "➖"
-    conferido = "➖"
-
-    modal_icon = '📦' # Ícone de caixa para grupo consolidado
-    
+    # Container do grupo consolidado
     with st.container():
-        st.markdown(f"<div class='process-card-container-inner' style='padding: 5px; margin-bottom: 2px;'>", unsafe_allow_html=True)
-
-        col_main_info, col_dates_status, col_docs_status, col_actions = st.columns([0.15, 0.25, 0.35, 0.05])
-        with col_main_info:
-            st.markdown(f"<div style='font-size: 2.5em; text-align: center; color: #F8F8F8;'>{modal_icon}</div>", unsafe_allow_html=True)
-            st.markdown(f"""
-                <div style='color: #E0E0E0; text-align: center;'>
-                    <strong>{principal_id}</strong><br>
-                    <small>({len(members_data)} processos)</small><br>
-                </div>
-            """, unsafe_allow_html=True)
-
-        with col_dates_status:
-            st.markdown(f"""
-                <div style='color: #E0E0E0;'>
-                    <span class="process-card-status-text" style="background-color: {status_display_color}; color: {_get_text_color(status_display_color)}; font-size: 1.2em;">{display_status}</span><br>
-                    <strong>Qtd Total:</strong> {_format_int_display(total_quantidade)} | <strong>Valor Total (US$):</strong> {_format_usd_display(total_valor_usd).replace('US$', '')}<br>
-                    <small>Nº Invoices: {invoices_display}</small><br>
-                    <strong>Previsão Pichau (Principal):</strong> {previsao_pichau}<br>
-                </div>
-            """, unsafe_allow_html=True)
-
-        with col_docs_status:
-            st.markdown(f"""
-                <div style='color: #E0E0E0;'>
-                    <strong>Fornecedores:</strong> {fornecedores_display}<br>
-                    <strong>Data Compra (Earliest):</strong> {earliest_data_compra_display}<br>
-                    <strong>Data Embarque (Earliest):</strong> {earliest_data_embarque_display}<br>
-                </div>
-            """, unsafe_allow_html=True)
-
-        with col_actions:
-            # Para o card consolidado, podemos ter ações específicas para o grupo
-            # Por exemplo, ver detalhes do grupo, desvincular, etc.
-            # Por enquanto, deixaremos um popover genérico
-            with st.popover("⚙️", help="Opções do Grupo Consolidado", use_container_width=True):
-                st.button("Ver Detalhes do Grupo (Em breve) 🔎", key=f"menu_query_group_{unique_id_for_key}")
-                # Adicione outras ações específicas para o grupo aqui, se necessário
-
-        col1_empty, col1_docs_status, col3_empty = st.columns([0.08, 0.32, 0.11])
-        with col1_docs_status:
-            st.markdown(f"""
-                        <div style='display: flex; justify-content: space-around; font-size: 0.9em; color: #E0E0E0;'>
-                            <span>Pago: <span class="process-card-doc-status">{pago}</span></span>
-                            <span>Docs Rev.: <span class="process-card-doc-status">{docs_revisados}</span></span>
-                            <span>Conh. Emb.: <span class="process-card-doc-status">{conhecimento_embarque}</span></span>                  
-                            <span>Desc. Feita: <span class="process-card-doc-status">{descricao_feita}</span></span>
-                            <span>Nota feita: <span class="process-card-doc-status">{nota_feita}</span></span>
-                            <span>Conferido: <span class="process-card-doc-status">{conferido}</span></span>
-                        </div>
-                    """, unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Seção de detalhes dos membros (ainda dentro do card consolidado, mas como um expander)
+        # Header do grupo
         st.markdown(f"""
-            <details style='color: #E0E0E0; margin-top: 10px;'>
-                <summary>Ver Processos Membros (Detalhes)</summary>
-                <div style='max-height: 250px; overflow-y: auto; border: 1px solid #444; padding: 10px; border-radius: 5px; background-color: #2A2A2A; margin-top: 10px;'>
+            <div style='background: linear-gradient(135deg, #2d3748 0%, #4a5568 100%); 
+                       color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px;
+                       box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);'>
+                <div style='display: flex; align-items: center; justify-content: space-between;'>
+                    <div>
+                        <h3 style='margin: 0; color: #FFD700;'>📦 Grupo Consolidado: {principal_id}</h3>
+                        <p style='margin: 5px 0 0 0; opacity: 0.9;'>
+                            {group_status} | Modal: Consolidado | Prev. Pichau: {previsao_pichau} | Membros: {len(members_data)} processos
+                        </p>
+                    </div>
+                </div>
+            </div>
         """, unsafe_allow_html=True)
         
-        for member in members_data:
-            st.markdown(f"""
-                <div style='margin-bottom: 8px; padding: 8px; border-bottom: 1px dashed #444;'>
-                    - <strong>Processo:</strong> {member.get('Processo_Novo', 'N/A')}<br>
-                    &nbsp;&nbsp;<strong>Fornecedor:</strong> {member.get('Fornecedor', 'N/A')}<br>
-                    &nbsp;&nbsp;<strong>Status:</strong> {member.get('Status_Geral', 'Sem Status')}<br>
-                    &nbsp;&nbsp;<strong>Nº Invoice:</strong> {member.get('N_Invoice', 'N/A')}<br>
-                    &nbsp;&nbsp;<strong>Qtd:</strong> {_format_int_display(member.get('Quantidade', 0))} | <strong>Valor (US$):</strong> {_format_usd_display(member.get('Valor_USD', 0.0))}
-                </div>
-            """, unsafe_allow_html=True)
-        
-        st.markdown("""
-                </div>
-            </details>
-        """, unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Cards individuais dos membros
+        for i, member in enumerate(members_data):
+            unique_member_id = f"consolidated_member_{unique_id_for_key}_{i}"
+            
+            # Renderiza cada membro como um card individual
+            with st.container():
+                st.markdown("<div style='margin-left: 20px; margin-bottom: 10px; border-left: 3px solid #4a5568; padding-left: 15px;'>", unsafe_allow_html=True)
+                
+                if st.session_state.get('show_payment_view', False):
+                    # Para view de pagamentos, busca dados específicos do membro
+                    process_novo = member.get('Processo_Novo', 'N/A')
+                    di_data = db_utils.get_declaracao_by_referencia(process_novo)
+                    frete_data = db_utils.get_frete_internacional_by_referencia(process_novo)
+                    _render_payment_card(member, unique_member_id, di_data=di_data, frete_internacional_data=frete_data)
+                else:
+                    _render_process_card(member, unique_member_id)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _render_process_card(row_dict: Dict[str, Any], unique_id_for_key: str):
@@ -2190,31 +2133,28 @@ def _display_followup_list_page():
                         st.session_state.loaded_cards_per_status[status] = 9999
                     # Removido st.rerun() - não necessário
             
-            # Botões de exportação (visíveis apenas para usuários com permissão ou admins)
-            if is_admin or "Exportar Excel" in user_allowed_screens: # Exemplo: uma permissão "Exportar Excel"
-                if st.session_state.followup_processes_data_non_consolidated:
-                    df_to_export_non_consolidated = pd.DataFrame(st.session_state.followup_processes_data_non_consolidated)
-                    excel_data_non_consolidated = _export_processes_to_excel(df_to_export_non_consolidated)
-                    st.download_button(
-                        label="Exportar Excel (Não Consolidados) 📊",
-                        data=excel_data_non_consolidated,
-                        file_name="processos_importacao_nao_consolidados.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="export_excel_button_non_consolidado"
-                    )
+            # Botão único de exportação Excel (combina dados não consolidados e consolidados)
+            if is_admin or "Exportar Excel" in user_allowed_screens:
+                # Combina dados não consolidados e consolidados
+                all_data_for_export = []
                 
-                all_consolidated_members_for_export = []
+                # Adiciona processos não consolidados
+                if st.session_state.followup_processes_data_non_consolidated:
+                    all_data_for_export.extend(st.session_state.followup_processes_data_non_consolidated)
+                
+                # Adiciona membros dos grupos consolidados
                 for group in st.session_state.consolidated_groups_data:
-                    all_consolidated_members_for_export.extend(group['members_data'])
-                if all_consolidated_members_for_export:
-                    df_to_export_consolidated = pd.DataFrame(all_consolidated_members_for_export)
-                    excel_data_consolidated = _export_processes_to_excel(df_to_export_consolidated)
+                    all_data_for_export.extend(group['members_data'])
+                
+                if all_data_for_export:
+                    df_to_export_combined = pd.DataFrame(all_data_for_export)
+                    excel_data_combined = _export_processes_to_excel(df_to_export_combined)
                     st.download_button(
-                        label="Exportar Excel (Consolidados) 📊",
-                        data=excel_data_consolidated,
-                        file_name="processos_importacao_consolidados.xlsx",
+                        label="📊 Exportar Excel (Todos os Processos)",
+                        data=excel_data_combined,
+                        file_name="processos_importacao_completo.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="export_excel_button_consolidado"
+                        key="export_excel_button_unified"
                     )
 
     st.markdown("---")
@@ -2412,120 +2352,6 @@ def _display_followup_list_page():
                 # `_render_table_view`.
                 _render_table_view(sorted_items_in_status, status)
 
-
-    # --- Botão flutuante de voltar ao topo (visual clássico, canto inferior direito) + função global para simulação ---
-    st.markdown("""
-        <style>
-        .float-voltar-topo-btn {
-            position: fixed;
-            bottom: 32px;
-            right: 32px;
-            z-index: 9999;
-            background: #0787FF;
-            color: #fff;
-            border: none;
-            border-radius: 50%;
-            width: 56px;
-            height: 56px;
-            box-shadow: 0 4px 16px rgba(7,135,255,0.25), 0 1.5px 4px rgba(0,0,0,0.10);
-            font-size: 2em;
-            font-weight: bold;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: background 0.2s, color 0.2s, box-shadow 0.2s, transform 0.2s;
-            outline: none;
-            opacity: 0.92;
-        }
-        .float-voltar-topo-btn:hover {
-            background: #005fa3;
-            color: #fff;
-            box-shadow: 0 6px 24px rgba(7,135,255,0.35), 0 2px 8px rgba(0,0,0,0.15);
-            transform: translateY(-2px) scale(1.08);
-            opacity: 1.0;
-        }
-        </style>
-        <button id="float-voltar-topo-btn" class="float-voltar-topo-btn" title="Voltar ao topo">⬆️</button>
-        <script>
-        // Função para encontrar o elemento rolável principal do Streamlit
-        function findScrollableContainer() {
-            let element = document.querySelector('.main [data-testid="stVerticalBlock"]');
-            if (element) return element;
-            element = document.querySelector('.stApp');
-            if (element) return element;
-            let bodyChildren = document.body.children;
-            for (let i = 0; i < bodyChildren.length; i++) {
-                let computedStyle = window.getComputedStyle(bodyChildren[i]);
-                if (computedStyle.overflowY === 'auto' || computedStyle.overflowY === 'scroll') {
-                    return bodyChildren[i];
-                }
-            }
-            return window;
-        }
-        function scrollToTopRobust() {
-            try {
-                let scrollableElement = findScrollableContainer();
-                if (scrollableElement) {
-                    if (scrollableElement.scrollTo) {
-                        scrollableElement.scrollTo({top: 0, behavior: 'smooth'});
-                    } else {
-                        window.scrollTo({top: 0, behavior: 'smooth'});
-                    }
-                }
-            } catch(e) {console.error("Erro ao tentar rolar para o topo:", e);}
-        }
-        // Função global para simular clique no botão flutuante
-        window.simulateScrollToTopClick = function() {
-            var btn = document.getElementById('float-voltar-topo-btn');
-            if (btn) { btn.click(); }
-            else { scrollToTopRobust(); }
-        }
-        function setupVoltarTopoBtn() {
-            var btn = document.getElementById('float-voltar-topo-btn');
-            if (btn) {
-                btn.onclick = scrollToTopRobust;
-                let scrollableElement = findScrollableContainer();
-                if (scrollableElement) {
-                    scrollableElement.addEventListener('scroll', function() {
-                        if (scrollableElement.scrollTop > 200) {
-                            btn.style.display = 'flex';
-                        } else {
-                            btn.style.display = 'none';
-                        }
-                    });
-                    if (scrollableElement.scrollTop > 200) {
-                        btn.style.display = 'flex';
-                    } else {
-                        btn.style.display = 'none';
-                    }
-                } else {
-                    window.addEventListener('scroll', function() {
-                        if (window.scrollY > 200) {
-                            btn.style.display = 'flex';
-                        } else {
-                            btn.style.display = 'none';
-                        }
-                    });
-                    if (window.scrollY > 200) {
-                        btn.style.display = 'flex';
-                    } else {
-                        btn.style.display = 'none';
-                    }
-                }
-            }
-        }
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', setupVoltarTopoBtn);
-        } else {
-            setupVoltarTopoBtn();
-        }
-        </script>
-    """, unsafe_allow_html=True)
-
-    # Exemplo de botão Streamlit que dispara o scroll para o topo via JS
-    if st.button("Ir para o Topo", key="btn_ir_para_topo"):
-        st.components.v1.html("<script>window.simulateScrollToTopClick && window.simulateScrollToTopClick();</script>", height=0, width=0)
 
 def _render_table_view(sorted_items_in_status: List[Dict[str, Any]], status: str):
     """
