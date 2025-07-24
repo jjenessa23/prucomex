@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 # --- Função para definir imagem de fundo com opacidade (copiada de app_main.py) ---
 def set_background_image(image_path):
+    """Define uma imagem de fundo para o aplicativo Streamlit com opacidade."""
     try:
         with open(image_path, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode()
@@ -97,11 +98,20 @@ def show_dashboard_page():
     processes_data = _load_processes_for_dashboard()
     df_followup = pd.DataFrame(processes_data) # Renomeado para df_followup para clareza
 
-    # Convert 'Data_Registro' to datetime objects (datetime64[ns]) for followup data
-    if not df_followup.empty and 'Data_Registro' in df_followup.columns:
-        df_followup['Data_Registro_dt'] = pd.to_datetime(df_followup['Data_Registro'], errors='coerce')
+    # Convert 'Data_Registro' and 'ETA_Recinto' to datetime objects (datetime64[ns]) for followup data
+    if not df_followup.empty:
+        if 'Data_Registro' in df_followup.columns:
+            df_followup['Data_Registro_dt'] = pd.to_datetime(df_followup['Data_Registro'], errors='coerce')
+        else:
+            df_followup['Data_Registro_dt'] = pd.NaT 
+        
+        if 'ETA_Recinto' in df_followup.columns: # NEW: Convert ETA_Recinto
+            df_followup['ETA_Recinto_dt'] = pd.to_datetime(df_followup['ETA_Recinto'], errors='coerce')
+        else:
+            df_followup['ETA_Recinto_dt'] = pd.NaT
     else:
         df_followup['Data_Registro_dt'] = pd.NaT 
+        df_followup['ETA_Recinto_dt'] = pd.NaT # NEW: Initialize ETA_Recinto_dt for empty dataframe
 
     # --- Análise de Status e Previsões (DO FOLLOW-UP) ---
     if not df_followup.empty:
@@ -193,6 +203,7 @@ def show_dashboard_page():
         current_today_ts = pd.to_datetime(current_today)
         end_date_ts = pd.to_datetime(end_date)
 
+        # Filtrar por Data_Registro_dt para o resumo geral
         filtered_df_for_summary_followup = df_followup[
             (df_followup['Data_Registro_dt'].notna()) &
             (df_followup['Data_Registro_dt'] >= current_today_ts) &
@@ -219,42 +230,58 @@ def show_dashboard_page():
     st.markdown("---")
 
 
-    # --- Detalhes por Data de Registro (Próximos X Dias) (DO FOLLOW-UP) ---
-    st.markdown(f"#### Detalhes por Data de Registro (Próximos {days_option} Dias - Follow-up)")
-    if not df_followup.empty and 'Data_Registro_dt' in df_followup.columns:
-        daily_summary_followup = {}
+    # --- Detalhes por ETA no Recinto (Próximos X Dias) (DO FOLLOW-UP) ---
+    # CHANGED: Section title to reflect ETA_Recinto
+    st.markdown(f"#### Detalhes por ETA no Recinto (Próximos {days_option} Dias - Follow-up)")
+    # CHANGED: Filter and group by ETA_Recinto_dt
+    if not df_followup.empty and 'ETA_Recinto_dt' in df_followup.columns:
+        daily_summary_followup_by_eta = {}
         for i in range(days_option):
             current_date_loop = current_today + timedelta(days=i)
-            daily_summary_followup[current_date_loop] = {'frete': 0.0, 'impostos': 0.0}
+            daily_summary_followup_by_eta[current_date_loop] = {'frete': 0.0, 'impostos': 0.0}
 
         df_followup['Estimativa_Frete_USD'] = pd.to_numeric(df_followup['Estimativa_Frete_USD'], errors='coerce').fillna(0)
         df_followup['Estimativa_Impostos_BR'] = pd.to_numeric(df_followup['Estimativa_Impostos_BR'], errors='coerce').fillna(0)
 
         for index, row in df_followup.iterrows():
-            data_registro_date = row['Data_Registro_dt'].date() if pd.notna(row['Data_Registro_dt']) else None
+            # CHANGED: Use ETA_Recinto_dt for daily summary
+            eta_recinto_date = row['ETA_Recinto_dt'].date() if pd.notna(row['ETA_Recinto_dt']) else None
             
-            if data_registro_date and data_registro_date in daily_summary_followup:
-                daily_summary_followup[data_registro_date]['frete'] += row['Estimativa_Frete_USD']
-                daily_summary_followup[data_registro_date]['impostos'] += row['Estimativa_Impostos_BR']
+            if eta_recinto_date and eta_recinto_date in daily_summary_followup_by_eta:
+                daily_summary_followup_by_eta[eta_recinto_date]['frete'] += row['Estimativa_Frete_USD']
+                daily_summary_followup_by_eta[eta_recinto_date]['impostos'] += row['Estimativa_Impostos_BR']
                 
-        sorted_daily_summary_followup = sorted(daily_summary_followup.items())
+        sorted_daily_summary_followup_by_eta = sorted(daily_summary_followup_by_eta.items())
 
         cols_per_row = 5
         
-        for i in range(0, len(sorted_daily_summary_followup), cols_per_row):
-            current_row_data = sorted_daily_summary_followup[i : i + cols_per_row]
+        for i in range(0, len(sorted_daily_summary_followup_by_eta), cols_per_row):
+            current_row_data = sorted_daily_summary_followup_by_eta[i : i + cols_per_row]
             cols = st.columns(cols_per_row)
             for j, (date_key, values) in enumerate(current_row_data):
                 with cols[j]:
                     st.markdown(f"**{date_key.strftime('%d/%m')}**")
                     st.markdown(f"Frete (USD): US$ {values['frete']:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
                     st.markdown(f"Impostos (BRL): R$ {values['impostos']:,.2f}".replace('.', '#').replace(',', '.').replace('#', ','))
+                    
+                    # NEW: Add button to view processes for this date
+                    if st.button(f"Ver Processos {date_key.strftime('%d/%m')}", key=f"view_processes_eta_{date_key.strftime('%Y%m%d')}"):
+                        # Filter processes for this specific ETA date
+                        processes_for_this_eta_date = df_followup[df_followup['ETA_Recinto_dt'].dt.date == date_key]
+                        
+                        if not processes_for_this_eta_date.empty:
+                            st.markdown(f"**Processos com ETA no Recinto em {date_key.strftime('%d/%m')}:**")
+                            # Display as a bullet list of Processo_Novo
+                            for idx, row in processes_for_this_eta_date.iterrows():
+                                st.markdown(f"- {row['Processo_Novo']}")
+                        else:
+                            st.info(f"Nenhum processo encontrado com ETA no Recinto em {date_key.strftime('%d/%m')}.")
             
-            if (i + cols_per_row) < len(sorted_daily_summary_followup):
+            if (i + cols_per_row) < len(sorted_daily_summary_followup_by_eta):
                 st.markdown("---")
 
     else:
-        st.info("Nenhum dado de 'Data_Registro' ou DataFrame vazio para exibir detalhes diários do Follow-up.")
+        st.info("Nenhum dado de 'ETA_Recinto' ou DataFrame vazio para exibir detalhes diários do Follow-up.")
     st.markdown("---")
 
 

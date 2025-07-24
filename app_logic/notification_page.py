@@ -1,6 +1,12 @@
 import streamlit as st
 from datetime import datetime
 import json # Para lidar com a string JSON de target_users
+import uuid # Importar uuid para gerar IDs únicos
+import logging # Importar o módulo de logging
+
+# Configura o logger para este módulo
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) # Definir um nível de logging para informações
 
 # Importar o db_manager e db_utils usando importação relativa,
 # pois notification_page.py está em app_logic e os dbs estão no diretório pai.
@@ -16,6 +22,11 @@ def _remove_notification(notification_id, deleted_by):
     """
     Marca uma notificação como excluída no banco de dados.
     """
+    if notification_id is None:
+        logger.error(f"Tentativa de remover notificação sem ID válido. Usuário: {deleted_by}")
+        st.error("Erro: Não foi possível excluir a notificação. ID da notificação ausente.")
+        return False # Indica que a operação falhou
+    
     if db_manager.mark_notification_as_deleted(notification_id, deleted_by):
         st.success("Notificação excluída com sucesso!")
     else:
@@ -67,8 +78,16 @@ def display_notifications_on_home(current_username: str):
             with col_notif_text:
                 st.warning(f"**Notificação:** {notification['message']} (Criada por: {notification['created_by']} em {notification['created_at']})")
             with col_notif_delete:
-                if st.button("🗑️", key=f"delete_home_notif_{notification['id']}", help="Excluir Notificação"):
-                    _remove_notification(notification['id'], current_username)
+                # Usa o ID da notificação para a key do botão (com fallback para UUID)
+                # e passa o ID da notificação para a função _remove_notification
+                notification_id_for_key = notification.get('id', str(uuid.uuid4()))
+                notification_id_for_action = notification.get('id') 
+                
+                # O botão será sempre exibido com uma key única.
+                # A lógica de exclusão no _remove_notification (e db_manager) deve lidar com IDs None/inválidos.
+                if st.button("🗑️", key=f"delete_home_notif_{notification_id_for_key}", help="Excluir Notificação"):
+                    _remove_notification(notification_id_for_action, current_username)
+
 
 # Nova função para a página de administração de notificações
 def show_admin_notification_page():
@@ -139,8 +158,15 @@ def show_admin_notification_page():
             with col_created_at:
                 st.write(notification['created_at'])
             with col_actions:
-                if st.button("🗑️", key=f"delete_admin_notif_{notification['id']}", help="Excluir Notificação"):
-                    _remove_notification(notification['id'], current_admin_username)
+                # Usa o ID da notificação para a key do botão (com fallback para UUID)
+                # e passa o ID da notificação para a função _remove_notification
+                notification_id_for_key = notification.get('id', str(uuid.uuid4()))
+                notification_id_for_action = notification.get('id') 
+                
+                # O botão será sempre exibido com uma key única.
+                # A lógica de exclusão no _remove_notification (e db_manager) deve lidar com IDs None/inválidos.
+                if st.button("🗑️", key=f"delete_admin_notif_{notification_id_for_key}", help="Excluir Notificação"):
+                    _remove_notification(notification_id_for_action, current_admin_username)
 
     st.markdown("---")
 

@@ -380,7 +380,7 @@ def obter_processos_filtrados(
                 if last_doc_snap.exists:
                     # Para `start_after` com ordenação, você deve passar os valores dos campos de ordenação do último documento.
                     # Exemplo: query_firestore = query_firestore.start_after({ 'Status_Geral': last_doc_snap.get('Status_Geral'), 'Modal': last_doc_snap.get('Modal'), 'Processo_Novo': last_doc_snap.get('Processo_Novo') })
-                    # Uma abordagem mais simples é usar o próprio snapshot do documento:
+                    # Uma abordagem más simples é usar o próprio snapshot do documento:
                     query_firestore = query_firestore.start_after(last_doc_snap)
                     logger.debug(f"obter_processos_filtrados: Paginação 'start_after' com documento ID: {start_after_doc_id}")
                 else:
@@ -940,6 +940,8 @@ def get_active_notifications(username: Optional[str] = None) -> List[Dict[str, A
 
         for notif_doc in all_active_notifications_docs:
             notif = notif_doc.to_dict()
+            notif['id'] = notif_doc.id # Adiciona o ID do documento Firestore
+            logger.debug(f"get_active_notifications: Fetched notification with doc.id={notif_doc.id} and data={notif}") # ADDED DEBUG LOG
             target_user_str = notif.get('target_users')
             
             if username is None: # Se não há usuário especificado, retorna todas as ativas
@@ -961,6 +963,11 @@ def mark_notification_as_deleted(notification_id: str, deleted_by: str) -> bool:
     original_message_text = "Mensagem original não encontrada."
     logger.info(f"mark_notification_as_deleted: Chamado para notificação ID: '{notification_id}', por: '{deleted_by}' (Firestore).")
 
+    if notification_id is None: 
+        logger.error(f"Tentativa de remover notificação sem ID válido. Usuário: {deleted_by}")
+        st.error("Erro: Não foi possível excluir a notificação. ID da notificação ausente.")
+        return False # Indica que a operação falhou
+
     notifications_ref_firestore = db_utils.get_firestore_collection_ref("followup_notifications")
     notification_history_ref_firestore = db_utils.get_firestore_collection_ref("followup_notification_history")
     
@@ -973,8 +980,11 @@ def mark_notification_as_deleted(notification_id: str, deleted_by: str) -> bool:
         original_notif_doc = notifications_ref_firestore.document(notification_id).get()
         if original_notif_doc.exists:
             original_message_text = original_notif_doc.to_dict().get('message', original_message_text)
+        else:
+            logger.warning(f"mark_notification_as_deleted: Documento original da notificação ID '{notification_id}' não encontrado para obter mensagem.") # ADDED DEBUG LOG
         
         notifications_ref_firestore.document(notification_id).update({"status": "deleted"})
+        logger.debug(f"mark_notification_as_deleted: Notification document '{notification_id}' status updated to 'deleted'.") # ADDED DEBUG LOG
         
         action_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         history_data_firestore = {
@@ -984,7 +994,8 @@ def mark_notification_as_deleted(notification_id: str, deleted_by: str) -> bool:
             "action_at": action_at,
             "original_message": original_message_text
         }
-        notification_history_ref_firestore.add(history_data_firestore)
+        notification_history_ref_firestore.add(history_data_firestore) # This line adds to history
+        logger.debug(f"mark_notification_as_deleted: History entry added for notification ID '{notification_id}'.") # ADDED DEBUG LOG
         
         logger.info(f"mark_notification_as_deleted: Notificação ID '{notification_id}' marcada como excluída por '{deleted_by}' no Firestore.")
         return True
@@ -1114,4 +1125,3 @@ def get_all_users_from_db() -> List[Dict[str, Any]]:
             {'id': 1, 'username': 'admin'},
             {'id': 2, 'username': 'usuario_mock' if not os.getenv('IS_STREAMLIT_CLOUD') else 'usuario_streamlit'},
         ]
-

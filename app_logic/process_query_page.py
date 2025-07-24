@@ -6,6 +6,7 @@ import os # Importa os para interagir com o sistema operacional, como caminhos d
 import base64 # Importa base64 para codificar/decodificar dados (usado para imagens de fundo).
 from typing import Optional, Any, Dict, List, Union, Tuple # Importa tipos para type hinting, melhorando a legibilidade e robustez.
 import io # Importa io para manipulação de streams de I/O (usado para PDFs).
+import pytz # NOVO: Importa pytz para manipulação de fusos horários
 
 # Importa o módulo db_manager para interagir com o banco de dados de processos.
 # A importação deve refletir a estrutura do seu projeto. Se db_manager.py
@@ -128,6 +129,27 @@ def _format_di_number(di_number):
         return f"{di_number[0:2]}/{di_number[2:9]}-{di_number[9]}"
     return di_number
 
+# NOVO: Define o fuso horário de Brasília
+BRASILIA_TZ = pytz.timezone('America/Sao_Paulo')
+
+# NOVO: Função para formatar timestamp para o fuso horário de Brasília
+def _format_timestamp_to_brasilia(ts_str: Optional[str]) -> str:
+    """
+    Converte uma string de timestamp (assumida como UTC) para o fuso horário de Brasília
+    e a formata como 'DD/MM/AAAA HH:MM:SS'.
+    """
+    if not ts_str or str(ts_str).lower() == 'nan':
+        return 'N/A'
+    try:
+        # Assume que o timestamp do DB está em UTC
+        dt_object_utc = datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.utc)
+        # Converte para o fuso horário de Brasília
+        dt_object_brasilia = dt_object_utc.astimezone(BRASILIA_TZ)
+        return dt_object_brasilia.strftime("%d/%m/%Y %H:%M:%S")
+    except ValueError:
+        logger.warning(f"Não foi possível analisar o timestamp '{ts_str}' para formatação em Brasília. Retornando 'N/A'.")
+        return 'N/A'
+
 
 # FUNÇÃO DE GERAÇÃO DE PDF AGORA USA WEASYPRINT
 def _generate_process_summary_pdf(process_data: Dict[str, Any], process_history: List[Dict[str, Any]]) -> Tuple[io.BytesIO, str]:
@@ -169,22 +191,23 @@ def _generate_process_summary_pdf(process_data: Dict[str, Any], process_history:
     ]
 
     status_history_map = {}
-    assigned_statuses = set()
+    
+    # Helper function to parse timestamp safely (reutiliza a lógica de _format_timestamp_to_brasilia para obter o objeto datetime)
+    def parse_timestamp_for_map(ts_str):
+        if not ts_str or str(ts_str).lower() == 'nan':
+            return None
+        try:
+            dt_object_utc = datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.utc)
+            return dt_object_utc.astimezone(BRASILIA_TZ)
+        except ValueError:
+            return None
 
     # Primeira passada: coletar todas as datas de status do histórico real
+    # e armazenar o timestamp mais recente para cada status
     if process_history:
         for entry in sorted(process_history, key=lambda x: x.get('timestamp', ''), reverse=False):
-            timestamp_to_use = entry.get('status_change_timestamp') if entry.get('status_change_timestamp') else entry['timestamp']
-            
-            def parse_timestamp_safely(ts_str):
-                if not ts_str or str(ts_str).lower() == 'nan':
-                    return datetime.min
-                try:
-                    return datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    return datetime.min
-
-            parsed_timestamp = parse_timestamp_safely(timestamp_to_use)
+            timestamp_to_use_str = entry.get('status_change_timestamp') if entry.get('status_change_timestamp') else entry['timestamp']
+            parsed_timestamp = parse_timestamp_for_map(timestamp_to_use_str)
 
             status_key = None
             if entry.get('campo_alterado') == 'Status_Geral' and entry.get('valor_novo'):
@@ -192,12 +215,13 @@ def _generate_process_summary_pdf(process_data: Dict[str, Any], process_history:
             elif entry.get('campo_alterado') == 'Processo Criado':
                 status_key = "Processo Criado"
             
-            if status_key and status_key not in assigned_statuses:
-                status_history_map[status_key] = {
-                    'timestamp': timestamp_to_use,
-                    'usuario': entry['usuario']
-                }
-                assigned_statuses.add(status_key)
+            if status_key and parsed_timestamp:
+                # Armazena o timestamp mais recente para cada status
+                if status_key not in status_history_map or parsed_timestamp > status_history_map[status_key]['timestamp']:
+                    status_history_map[status_key] = {
+                        'timestamp': parsed_timestamp,
+                        'usuario': entry['usuario']
+                    }
     
     # Encontra o timestamp mais antigo de todo o histórico do processo
     first_known_timestamp_overall = None
@@ -206,13 +230,13 @@ def _generate_process_summary_pdf(process_data: Dict[str, Any], process_history:
             ts_str = entry.get('status_change_timestamp') or entry.get('timestamp')
             if ts_str and str(ts_str).lower() != 'nan':
                 try:
-                    current_ts = datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S")
+                    current_ts = datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.utc)
                     if first_known_timestamp_overall is None or current_ts < first_known_timestamp_overall:
                         first_known_timestamp_overall = current_ts
                 except ValueError:
                     pass
 
-    # Segunda passada: preencher status ausentes que precedem ou são iguais ao status atual
+    # Obtém o índice do status atual na lista completa de todos os status possíveis
     current_status = process_data.get('Status_Geral', 'N/A')
     current_status_overall_index = -1
     try:
@@ -220,15 +244,24 @@ def _generate_process_summary_pdf(process_data: Dict[str, Any], process_history:
     except ValueError:
         logger.info(f"O status atual '{current_status}' não foi encontrado na lista completa de status possíveis.")
 
+    # Segunda passada: preencher status ausentes e ajustar timestamps para a sequência
+    final_timeline_timestamps = {}
+    last_valid_timestamp = None
+
     if first_known_timestamp_overall:
-        for status in all_possible_statuses:
-            # Preenche o status se ele precede ou é igual ao status atual, E não tem um timestamp já definido
-            if all_possible_statuses.index(status) <= current_status_overall_index and \
-               status not in status_history_map:
-                status_history_map[status] = {
-                    'timestamp': first_known_timestamp_overall.strftime("%Y-%m-%d %H:%M:%S"),
-                    'usuario': 'Sistema (Data de Criação/Primeiro Registro)'
-                }
+        last_valid_timestamp = first_known_timestamp_overall.astimezone(BRASILIA_TZ)
+    
+    for status in all_possible_statuses:
+        if status in status_history_map:
+            # Se o status tem um timestamp real, usa-o e atualiza o last_valid_timestamp
+            final_timeline_timestamps[status] = status_history_map[status]['timestamp']
+            last_valid_timestamp = status_history_map[status]['timestamp']
+        elif last_valid_timestamp:
+            # Se o status não tem um timestamp real, mas há um last_valid_timestamp, usa-o
+            final_timeline_timestamps[status] = last_valid_timestamp
+        else:
+            # Se não há nenhum timestamp real anterior, e este status também não tem, usa N/A
+            final_timeline_timestamps[status] = None
 
 
     # CONSTRUÇÃO DO HTML PARA O PDF
@@ -377,25 +410,16 @@ def _generate_process_summary_pdf(process_data: Dict[str, Any], process_history:
         
         icon_class = status_icons_html.get(status, "fa-solid fa-circle")
         
-        timestamp_info = status_history_map.get(status, {}).get('timestamp')
-        display_date = ''
-        display_time = ''
-        if timestamp_info:
-            try:
-                dt_object = datetime.strptime(str(timestamp_info).split('.')[0], "%Y-%m-%d %H:%M:%S")
-                display_date = dt_object.strftime("%d/%m/%Y")
-                display_time = dt_object.strftime("%H:%M")
-            except ValueError:
-                display_date = "N/A"
-                display_time = "N/A"
+        timestamp_obj = final_timeline_timestamps.get(status) # Pega o objeto datetime final
+        display_datetime_str = timestamp_obj.strftime("%d/%m/%Y %H:%M") if timestamp_obj else "N/A"
 
         # Adiciona o segmento de linha antes de cada ponto, exceto o primeiro
         if i > 0:
             # Verifica se o segmento atual deve ser concluído (se o status anterior ou atual estiver completo)
-            prev_status = displayed_timeline_statuses_for_pdf[i-1]
+            prev_displayed_status = displayed_timeline_statuses_for_pdf[i-1]
             segment_completed_class = ""
             if (current_status_overall_index != -1 and \
-                all_possible_statuses.index(prev_status) <= current_status_overall_index) and \
+                all_possible_statuses.index(prev_displayed_status) <= current_status_overall_index) and \
                (current_status_overall_index != -1 and \
                 all_possible_statuses.index(status) <= current_status_overall_index):
                 segment_completed_class = "completed-segment"
@@ -410,8 +434,7 @@ def _generate_process_summary_pdf(process_data: Dict[str, Any], process_history:
                     <i class="{icon_class}"></i>
                 </div>
                 <div class="status-label">{status}</div>
-                <div class="status-date">{display_date}</div>
-                <div class="status-date">{display_time}</div>
+                <div class="status-date">{display_datetime_str}</div> <!-- Exibe data e hora combinadas -->
             </div>
         """
     html_content += """
@@ -545,6 +568,12 @@ def show_process_query_page(process_identifier: Any, return_callback: callable):
     background_image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'logo_navio_atracado.png')
     set_background_image(background_image_path)
 
+    # NOVO: Limpa o cache de dados do processo e histórico para garantir que os dados mais recentes sejam buscados
+    db_manager.obter_processo_por_id.clear()
+    db_manager.obter_processo_by_processo_novo.clear()
+    db_manager.obter_historico_processo.clear()
+
+
     # Inicializa process_data no session_state para carregar automaticamente
     if 'current_process_data' not in st.session_state:
         st.session_state.current_process_data = None
@@ -662,40 +691,38 @@ def show_process_query_page(process_identifier: Any, return_callback: callable):
 
     # Cria um dicionário de histórico de status para fácil acesso (Status -> {timestamp, usuario})
     status_history_map = {}
-    assigned_statuses = set()
+    
+    # Helper function to parse timestamp safely (reutiliza a lógica de _format_timestamp_to_brasilia para obter o objeto datetime)
+    def parse_timestamp_for_map(ts_str):
+        if not ts_str or str(ts_str).lower() == 'nan':
+            return None
+        try:
+            dt_object_utc = datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.utc)
+            return dt_object_utc.astimezone(BRASILIA_TZ)
+        except ValueError:
+            return None
 
     # Primeira passada: coletar todas as datas de status do histórico real
+    # e armazenar o timestamp mais recente para cada status
     if process_history:
         for entry in sorted(process_history, key=lambda x: x.get('timestamp', ''), reverse=False):
-            timestamp_to_use = entry.get('status_change_timestamp') if entry.get('status_change_timestamp') else entry['timestamp']
-            
-            # Helper function to parse timestamp safely
-            def parse_timestamp_safely(ts_str):
-                if not ts_str or str(ts_str).lower() == 'nan':
-                    return datetime.min # Usa uma data muito antiga para timestamps inválidos/ausentes
-                try:
-                    # Remove milissegundos se presentes (ex: '2024-01-01 12:30:45.123')
-                    return datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    logger.warning(f"Não foi possível analisar o timestamp '{ts_str}'. Usando datetime.min para comparação.")
-                    return datetime.min
-
-            parsed_timestamp = parse_timestamp_safely(timestamp_to_use)
+            timestamp_to_use_str = entry.get('status_change_timestamp') if entry.get('status_change_timestamp') else entry['timestamp']
+            parsed_timestamp = parse_timestamp_for_map(timestamp_to_use_str)
 
             status_key = None
             if entry.get('campo_alterado') == 'Status_Geral' and entry.get('valor_novo'):
                 status_key = entry.get('valor_novo')
-            elif entry.get('campo_alterado') == 'Processo Criado': # Captura a data de criação do processo
+            elif entry.get('campo_alterado') == 'Processo Criado':
                 status_key = "Processo Criado"
             
-            # Registra apenas o primeiro timestamp para cada status encontrado
-            if status_key and status_key not in assigned_statuses:
-                status_history_map[status_key] = {
-                    'timestamp': timestamp_to_use,
-                    'usuario': entry['usuario']
-                }
-                assigned_statuses.add(status_key)
-
+            if status_key and parsed_timestamp:
+                # Armazena o timestamp mais recente para cada status
+                if status_key not in status_history_map or parsed_timestamp > status_history_map[status_key]['timestamp']:
+                    status_history_map[status_key] = {
+                        'timestamp': parsed_timestamp,
+                        'usuario': entry['usuario']
+                    }
+    
     # Encontra o timestamp mais antigo de todo o histórico do processo
     first_known_timestamp_overall = None
     if process_history:
@@ -703,7 +730,7 @@ def show_process_query_page(process_identifier: Any, return_callback: callable):
             ts_str = entry.get('status_change_timestamp') or entry.get('timestamp')
             if ts_str and str(ts_str).lower() != 'nan':
                 try:
-                    current_ts = datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S")
+                    current_ts = datetime.strptime(str(ts_str).split('.')[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.utc)
                     if first_known_timestamp_overall is None or current_ts < first_known_timestamp_overall:
                         first_known_timestamp_overall = current_ts
                 except ValueError:
@@ -717,17 +744,26 @@ def show_process_query_page(process_identifier: Any, return_callback: callable):
     except ValueError:
         logger.info(f"O status atual '{current_status}' não foi encontrado na lista completa de status possíveis.")
 
-    # Segunda passada: preencher status ausentes que precedem ou são iguais ao status atual
+    # Segunda passada: preencher status ausentes e ajustar timestamps para a sequência
+    final_timeline_timestamps = {}
+    last_valid_timestamp = None
+
     if first_known_timestamp_overall:
-        for status in all_possible_statuses:
-            # Preenche o status se ele precede ou é igual ao status atual, E não tem um timestamp já definido
-            if all_possible_statuses.index(status) <= current_status_overall_index and \
-               status not in status_history_map:
-                status_history_map[status] = {
-                    'timestamp': first_known_timestamp_overall.strftime("%Y-%m-%d %H:%M:%S"),
-                    'usuario': 'Sistema (Data de Criação/Primeiro Registro)'
-                }
+        last_valid_timestamp = first_known_timestamp_overall.astimezone(BRASILIA_TZ)
     
+    for status in all_possible_statuses:
+        if status in status_history_map:
+            # Se o status tem um timestamp real, usa-o e atualiza o last_valid_timestamp
+            final_timeline_timestamps[status] = status_history_map[status]['timestamp']
+            last_valid_timestamp = status_history_map[status]['timestamp']
+        elif last_valid_timestamp:
+            # Se o status não tem um timestamp real, mas há um last_valid_timestamp, usa-o
+            final_timeline_timestamps[status] = last_valid_timestamp
+        else:
+            # Se não há nenhum timestamp real anterior, e este status também não tem, usa N/A
+            final_timeline_timestamps[status] = None
+
+
     # === INÍCIO DO AJUSTE DA TIMELINE, CORES E ALINHAMENTO ===
     # CSS para o estilo da timeline
     st.markdown("""
@@ -861,23 +897,19 @@ def show_process_query_page(process_identifier: Any, return_callback: callable):
         
         icon_class = status_icons.get(status, "fa-solid fa-circle") 
 
-        timestamp_info = status_history_map.get(status, {}).get('timestamp')
-        
-        display_date = ''
-        display_time = ''
-        if timestamp_info:
-            try:
-                dt_object = datetime.strptime(str(timestamp_info).split('.')[0], "%Y-%m-%d %H:%M:%S")
-                display_date = dt_object.strftime("%d/%m/%Y")
-                display_time = dt_object.strftime("%H:%M")
-                
-            except ValueError:
-                logger.warning(f"Erro ao formatar timestamp da timeline para status '{status}': {timestamp_info}")
-                display_date = "N/A"
-                display_time = "N/A"
+        timestamp_obj = final_timeline_timestamps.get(status) # Pega o objeto datetime final
+        display_datetime_str = timestamp_obj.strftime("%d/%m/%Y %H:%M") if timestamp_obj else "N/A"
 
         # Constrói o HTML para cada ponto de status
-        timeline_elements.append(f"""<div class="status-point-wrapper"><div class="status-circle {circle_class}"><i class="{icon_class}"></i></div><div class="status-label">{status}</div><div class="status-date">{display_date}</div><div class="status-date">{display_time}</div></div>""")
+        timeline_elements.append(f"""
+            <div class="status-point-wrapper">
+                <div class="status-circle {circle_class}">
+                    <i class="{icon_class}"></i>
+                </div>
+                <div class="status-label">{status}</div>
+                <div class="status-date">{display_datetime_str}</div> <!-- Exibe data e hora combinadas -->
+            </div>
+        """)
     
     timeline_elements.append('</div>') # Fecha status-timeline-overall-container
     timeline_html = "".join(timeline_elements) # Junta todas as partes em uma única string
@@ -1000,16 +1032,18 @@ def show_process_query_page(process_identifier: Any, return_callback: callable):
         df_history = pd.DataFrame(process_history)
         
         # Formatar timestamps para legibilidade
+        # Usar a mesma lógica de fuso horário de Brasília para o histórico detalhado
         if 'timestamp' in df_history.columns:
             df_history['timestamp'] = df_history['timestamp'].apply(
-                lambda x: datetime.strptime(str(x).split('.')[0], "%Y-%m-%d %H:%M:%S").strftime("%d/%m/%Y %H:%M:%S") if x and str(x).lower() != 'nan' else 'N/A'
+                lambda x: _format_timestamp_to_brasilia(x) if x and str(x).lower() != 'nan' else 'N/A'
             )
         if 'status_change_timestamp' in df_history.columns:
             df_history['status_change_timestamp'] = df_history['status_change_timestamp'].apply(
-                lambda x: datetime.strptime(str(x).split('.')[0], "%Y-%m-%d %H:%M:%S").strftime("%d/%m/%Y %H:%M:%S") if x and str(x).lower() != 'nan' else 'N/A'
+                lambda x: _format_timestamp_to_brasilia(x) if x and str(x).lower() != 'nan' else 'N/A'
             )
         
         # Selecionar e reordenar colunas para exibição
+        # Inclui todas as colunas relevantes do histórico
         display_cols = [
             'timestamp', 'usuario', 'campo_alterado', 'valor_antigo', 'valor_novo',
             'status_change_timestamp', 'detalhes_adicionais'
@@ -1030,3 +1064,4 @@ def show_process_query_page(process_identifier: Any, return_callback: callable):
 
     st.markdown("---")
     st.write("Esta tela apresenta uma visão detalhada do processo selecionado.")
+
