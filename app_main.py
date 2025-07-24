@@ -166,6 +166,23 @@ logger = logging.getLogger(__name__)
 # --- CSS para remover a "tag preta" do Streamlit e otimizações de layout ---
 st.markdown("""
 <style>
+/* Customiza o header do Streamlit */
+    header[data-testid="stHeader"] {
+        background-color: transparent !important;
+        height: 0px !important;
+    }
+    
+    /* Remove decorações */
+    div[data-testid="stDecoration"] {
+        background-image: none !important;
+        display: none;
+    }
+    
+    /* Ajusta o container principal */
+    .main .block-container {
+        padding-top: 0rem;
+        margin-top: 0rem;
+    }
 /* Oculta o botão de fullscreen que aparece ao passar o mouse sobre as imagens */
 button[title="View fullscreen"] {
     display: none !important;
