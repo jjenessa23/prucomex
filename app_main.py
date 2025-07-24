@@ -87,7 +87,12 @@ if not st.session_state.firebase_ready:
                                                    "Exportar Excel", # Adicionando permissão para exportar excel
                                                    "Testar API Portonave Lineup", # NOVO: Adicionando permissão para a nova tela de API
                                                    "Cotação de Frete Internacional", # NOVO: Permissão para a tela de cotação
-                                                   "Inserir Cotação Agente"] # NOVO: Permissão para a tela de inserção de cotação do agente
+                                                   "Inserir Cotação Agente", # NOVO: Permissão para a tela de inserção de cotação do agente
+                                                   "Mais Filtros FUP", # NOVO: Permissão para a nova tela de filtros
+                                                   "Alterar Visualização FUP", # NOVO: Permissão para a nova tela de visualização
+                                                   "Editar Checklist FUP", # NOVO: Permissão para a nova tela de edição de checklist
+                                                   "Arquivar Processo FUP", # NOVO: Permissão para a nova tela de arquivamento
+                                                   "Alterar Status do Processo FUP"] # NOVO: Permissão para a nova tela de alteração de status
                             user_data = {"username": admin_username, "password_hash": admin_password_hash, "is_admin": True, "allowed_screens": all_screens_default}
                             users_ref.document(admin_username).set(user_data)
                             logger.info("APP_MAIN_DEBUG: Usuário admin padrão 'admin' criado no Firestore.")
@@ -117,28 +122,50 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app_logic'))
 from app_logic.utils import set_background_image, set_sidebar_background_image, get_dolar_cotacao
 from app_logic import db_utils # Importar db_utils aqui após a inicialização do Firebase
 
+# NOVO: Importar as novas páginas refatoradas
+from app_logic import followup_filters_page
+from app_logic import followup_view_mode_page
+from app_logic import followup_edit_checklist_page
+from app_logic import followup_archive_process_page
+from app_logic import followup_change_status_page
+
+from app_logic import followup_db_manager
+from app_logic import custo_item_page
+from app_logic import analise_xml_di_page
+from app_logic import detalhes_di_calculos_page
+from app_logic import descricoes_page
+from app_logic import calculo_portonave_page
+from app_logic import calculo_itapoa_page
+from app_logic import followup_importacao_page
+from app_logic import user_management_page
+from app_logic import dashboard_page
+from app_logic import notification_page
+from app_logic import calculo_frete_internacional_page
+from app_logic import pdf_analyzer_page
+from app_logic import ncm_list_page
+from app_logic import process_form_page
+from app_logic import produtos_page
+from app_logic import clonagem_processo_page
+from app_logic import process_query_page
+from app_logic import vincular_consolidado_page
+from app_logic import mass_process_manager_page
+from app_logic import mass_edit_processes_page
+from app_logic import update_process_data_page # <-- NOVA LINHA
+from app_logic import portonave_lineup_page # <-- NOVA LINHA
+from app_logic import calculo_futura_page
+from app_logic import calculo_paclog_elo_page
+from app_logic import calculo_fechamento_page
+from app_logic import calculo_fn_transportes_page
+from app_logic import rateios_carga_page
+from app_logic import cotacao_frete
+from app_logic import inserir_cotacao_agente
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# --- CSS para remover a "tag preta" do Streamlit e otimizações de layout ---
 st.markdown("""
 <style>
-/* REMOVE HEADER DO STREAMLIT */
-        header[data-testid="stHeader"] {
-            display: none !important;
-        }
-        div[data-testid="stDecoration"] {
-            display: none !important;
-        }
-        .main .block-container {
-            padding-top: 1rem !important;
-            margin-top: 0rem !important;
-        }
-        
-        /* Reset da sidebar para não ser afetada */
-        [data-testid="stSidebar"] {
-            background-color: inherit !important;
-            border: none !important;
-        }
-        [data-testid="stSidebar"] > div {
-            background-color: inherit !important;
-        }
 /* Oculta o botão de fullscreen que aparece ao passar o mouse sobre as imagens */
 button[title="View fullscreen"] {
     display: none !important;
@@ -251,9 +278,14 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* Ocultar o "Deploy" e os três pontos no canto superior direito */
-.st-emotion-cache-s1qj3df {
+.st-emotion-cache-s1qj3df { /* Este seletor pode variar entre versões do Streamlit */
     display: none !important;
 }
+/* Seletor mais genérico para o cabeçalho superior do Streamlit */
+div[data-testid="stAppViewContainer"] > header {
+    display: none !important;
+}
+
 
 /* Ajustar o padding do conteúdo dentro da sidebar para um visual más compacto */
 [data-testid="stSidebarContent"] {
@@ -385,55 +417,6 @@ body {
 </style>
 """, unsafe_allow_html=True)
 
-try:
-    # db_utils importado após a inicialização do Firebase para garantir que st.session_state.db_firestore esteja disponível
-    # e que as credenciais sejam carregadas corretamente.
-    # No entanto, a importação de db_utils deve ser feita antes de usá-lo.
-    # A ordem de importação é importante aqui.
-    # Se db_utils.py depende de st.session_state.db_firestore, ele deve ser importado após a inicialização do Firebase.
-    # Se db_utils.py inicializa o Firestore, então a lógica de inicialização do Firebase em app_main.py
-    # pode ser simplificada ou removida, confiando em db_utils para isso.
-    # Pelo trecho de código fornecido, db_utils.py parece inicializar o Firestore por conta própria.
-    # Então, a importação aqui está ok, mas a lógica de inicialização em app_main.py precisa ser revista
-    # para não duplicar ou conflitar com db_utils.py
-    pass # Removendo o try/except original para db_utils, pois ele será importado abaixo
-except ImportError:
-    st.error("ERRO CRÍTICO: O módulo 'db_utils' não foi encontrado. Por favor, certifique-se de que 'db_utils.py' está no diretório 'app_logic' e que todas as dependências estão instaladas.")
-    st.stop() # Interrompe a execução do aplicativo se o db_utils não puder ser importado
-from app_logic import followup_db_manager
-from app_logic import custo_item_page
-from app_logic import analise_xml_di_page
-from app_logic import detalhes_di_calculos_page
-from app_logic import descricoes_page
-from app_logic import calculo_portonave_page
-from app_logic import calculo_itapoa_page
-from app_logic import followup_importacao_page
-from app_logic import user_management_page
-from app_logic import dashboard_page
-from app_logic import notification_page
-from app_logic import calculo_frete_internacional_page
-from app_logic import pdf_analyzer_page
-from app_logic import ncm_list_page
-from app_logic import process_form_page
-from app_logic import produtos_page
-from app_logic import clonagem_processo_page
-from app_logic import process_query_page
-from app_logic import vincular_consolidado_page
-from app_logic import mass_process_manager_page
-from app_logic import mass_edit_processes_page
-from app_logic import update_process_data_page # <-- NOVA LINHA
-from app_logic import portonave_lineup_page # <-- NOVA LINHA
-from app_logic import calculo_futura_page
-from app_logic import calculo_paclog_elo_page
-from app_logic import calculo_fechamento_page
-from app_logic import calculo_fn_transportes_page
-from app_logic import rateios_carga_page
-from app_logic import cotacao_frete
-from app_logic import inserir_cotacao_agente
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 # --- Autenticação e Usuário ---
 def authenticate_user(username, password):
     """
@@ -510,7 +493,53 @@ PAGES = {
     "Testar API Portonave Lineup": portonave_lineup_page.show_portonave_lineup_page, # NOVO: Adicionando a nova tela de API
     "Cotação de Frete Internacional": cotacao_frete.show_cotacao_frete_page, # Nova tela 1
     "Inserir Cotação Agente": inserir_cotacao_agente.show_inserir_cotacao_agente_page, # Nova tela 2
+    "Mais Filtros FUP": followup_filters_page.display_filter_search_page, # NOVO: Adicionando a nova tela de filtros
+    "Alterar Visualização FUP": followup_view_mode_page.display_view_mode_page, # NOVO: Adicionando a nova tela de visualização
+    "Editar Checklist FUP": followup_edit_checklist_page.display_edit_checklist_page, # NOVO: Adicionando a nova tela de edição de checklist
+    "Arquivar Processo FUP": followup_archive_process_page.display_archive_process_page, # NOVO: Adicionando a nova tela de arquivamento
+    "Alterar Status do Processo FUP": followup_change_status_page.display_change_status_page # NOVO: Adicionando a nova tela de alteração de status
 }
+
+# --- Autenticação e Usuário ---
+def authenticate_user(username, password):
+    """
+    Autentica o usuário usando a função real do db_utils.
+    """
+    return db_utils.verify_credentials(username, password)
+
+data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+if not os.path.exists(data_dir):
+    try:
+        os.makedirs(data_dir)
+        logger.info(f"Diretório de dados '{data_dir}' criado.")
+    except OSError as e:
+        logger.error(f"Erro ao criar o diretório de dados '{data_dir}': {e}")
+        st.error(f"ERRO: Não foi possível criar o diretório de dados em '{data_dir}'. Detalhes: {e}")
+        st.session_state.db_initialized = False # Define como False se a criação do dir falhar
+        st.stop()
+else:
+    logger.info(f"Diretório de dados '{data_dir}' já existe.")
+
+
+if 'db_initialized' not in st.session_state:
+    st.session_state.db_initialized = db_utils.create_tables()
+    if not st.session_state.get('firebase_ready', False): # Certifica que o Firebase é o ponto crítico
+        logger.error("Falha na conexão inicial com Firebase. O aplicativo não pode continuar.")
+        st.error("ERRO CRÍTICO: Falha na conexão inicial com Firebase. Verifique logs e secrets.toml.")
+        st.stop()
+    else:
+        st.session_state.db_initialized = True
+        logger.info("Bancos de dados e tabelas inicializados com sucesso (Firestore pronto).")
+
+
+# --- Estado da Sessão ---
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'user_info' not in st.session_state:
+    st.session_state.user_info = None
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = "Home"
 
 # --- Tela de Login ---
 if not st.session_state.authenticated:
@@ -652,7 +681,12 @@ else:
         "Editar Múltiplos Processos", "Atualizar Dados de Processo",
         "Testar API Portonave Lineup",
         "Cotação de Frete Internacional", # NOVO: Adicionando a nova tela de cotação
-        "Inserir Cotação Agente" # NOVO: Adicionando a nova tela de inserção de cotação do agente
+        "Inserir Cotação Agente", # NOVO: Adicionando a nova tela de inserção de cotação do agente
+        "Mais Filtros FUP", # NOVO: Adicionando a nova tela de filtros
+        "Alterar Visualização FUP", # NOVO: Adicionando a nova tela de visualização
+        "Editar Checklist FUP", # NOVO: Adicionando a nova tela de edição de checklist
+        "Arquivar Processo FUP", # NOVO: Adicionando a nova tela de arquivamento
+        "Alterar Status do Processo FUP" # NOVO: Adicionando a nova tela de alteração de status
     ]
     if any(page in allowed_screens for page in registros_pages) or is_admin:
         st.sidebar.subheader("Registros")
@@ -757,7 +791,7 @@ else:
             # Buscar cotação atual da API
             dolar_data_api = get_dolar_cotacao()
             
-            # Buscar última cotação do banco de dados para cada tipo de dólar (agora mais robusta)
+            # Buscar última cotação do banco de dados para cada tipo de dólar (agora más robusta)
             latest_dolar_cotacoes_db = {}
             if st.session_state.get('firebase_ready', False):
                 latest_dolar_cotacoes_db = db_utils.get_latest_dolar_cotacao_from_db()
@@ -798,7 +832,7 @@ else:
                 api_fetch_successful_for_all = False # Se dolar_data_api é None, a API falhou completamente
 
             # 2. Se o valor ainda é 'N/A' (não veio da API ou era inválido da API), tentar do banco de dados
-            # Este loop agora se beneficia do `get_latest_dolar_cotacao_from_db` mais robusto
+            # Este loop agora se beneficia do `get_latest_dolar_cotacao_from_db` más robusto
             for key in cotacoes_para_exibir.keys():
                 if not isinstance(cotacoes_para_exibir[key]['valor'], float): # Se ainda não é um float (ou seja, é 'N/A')
                     if key in latest_dolar_cotacoes_db:
@@ -832,13 +866,13 @@ else:
             # Exibir as cotações
             # Verifica se pelo menos um valor de cotação é diferente de 'N/A' (ou seja, foi preenchido com um float)
             if any(isinstance(c['valor'], float) for c in cotacoes_para_exibir.values()):
-                st.info(f"💰 Cotações do dólar mais recentes:")
+                st.info(f"💰 Cotações do dólar más recentes:")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
                     st.metric(
-                        label="Dólar Abertura Compra �", 
+                        label="Dólar Abertura Compra ", 
                         value=f"{cotacoes_para_exibir['abertura_compra']['valor']:.4f}" if isinstance(cotacoes_para_exibir['abertura_compra']['valor'], float) else "N/A",
                         help=f"Última atualização: {cotacoes_para_exibir['abertura_compra']['fonte']}"
                     )
@@ -904,7 +938,7 @@ else:
                     process_form_page.show_process_form_page(
                         process_identifier=st.session_state.get('form_process_identifier'),
                         reload_processes_callback=st.session_state.get('form_reload_processes_callback'),
-                        is_cloning=st.session_state.get('form_is_cloning', False) # Certifica que a flag é passada
+                        is_cloning=st.session_state.get('form_is_cloning', False)
                     )
                 elif st.session_state.current_page == "Clonagem de Processo":
                     clonagem_processo_page.show_clonagem_processo_page(
@@ -932,6 +966,16 @@ else:
                     cotacao_frete.show_cotacao_frete_page()
                 elif st.session_state.current_page == "Inserir Cotação Agente":
                     inserir_cotacao_agente.show_inserir_cotacao_agente_page()
+                elif st.session_state.current_page == "Mais Filtros FUP": # NOVO: Rota para a página de filtros
+                    followup_filters_page.display_filter_search_page()
+                elif st.session_state.current_page == "Alterar Visualização FUP": # NOVO: Rota para a página de visualização
+                    followup_view_mode_page.display_view_mode_page()
+                elif st.session_state.current_page == "Editar Checklist FUP": # NOVO: Rota para a página de edição de checklist
+                    followup_edit_checklist_page.display_edit_checklist_page()
+                elif st.session_state.current_page == "Arquivar Processo FUP": # NOVO: Rota para a página de arquivamento
+                    followup_archive_process_page.display_archive_process_page()
+                elif st.session_state.current_page == "Alterar Status do Processo FUP": # NOVO: Rota para a página de alteração de status
+                    followup_change_status_page.display_change_status_page()
                 else:
                     PAGES[st.session_state.current_page]()
             else:
