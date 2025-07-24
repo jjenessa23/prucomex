@@ -45,7 +45,7 @@ def send_quotation_request_email(request_details: Dict[str, Any], agent_email: s
         # Gerar um link para a página de inserção de cotação.
         # O agente de carga terá que fazer login na página de inserção de cotação.
         quotation_link = (
-            f"http://localhost:8501/?page=Inserir%20Cotação%20Agente&request_id={request_details['id']}"
+            f"https://prucomexv.streamlit.app/"
         )
 
         # Construir o conteúdo específico do transporte para o e-mail
