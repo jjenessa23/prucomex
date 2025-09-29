@@ -84,6 +84,7 @@ def _clear_email_fields():
     """
     Reseta os valores dos campos relacionados ao envio de e-mail no session_state.
     """
+    # Define o valor padrão (não None)
     st.session_state.frete_email_to = "jjenessa23@gmail.com"
     # O assunto e corpo serão recalculados automaticamente no próximo rerun
     st.session_state.frete_email_subject_send = ""
@@ -233,13 +234,16 @@ def _load_frete_internacional():
         else:
             total_brl = existing_frete_data.get('total_maritimo_brl', 0.0)
 
+        iof_usd_val = existing_frete_data.get('iof_aereo_usd', 0.0) if existing_frete_data.get('tipo_frete') == "Aéreo" else existing_frete_data.get('iof_maritimo_usd', 0.0)
+
         email_subject_generated, email_body_plaintext_generated = _generate_frete_email_content(
             existing_frete_data.get('tipo_frete'), referencia_processo, total_brl, 
-            existing_frete_data.get('iof_aereo_usd', 0.0) or existing_frete_data.get('iof_maritimo_usd', 0.0), # IOF salvo
+            iof_usd_val,
             existing_frete_data.get('dolar_cotacao_usado', 0.0), saudacao, usuario_sistema
         )
 
         # Atualiza os campos de e-mail para que reflitam os dados recarregados (e possam ser editados)
+        # Note: O campo 'frete_email_to' é mantido para que o usuário não perca o último destinatário
         st.session_state['frete_email_subject_send'] = email_subject_generated
         st.session_state['frete_email_body_send'] = email_body_plaintext_generated
         
@@ -383,9 +387,11 @@ def _display_email_sending_section(frete_type, total_calculated_brl, iof_usd_val
         key="frete_email_to" # Usa a chave do session_state
         # O valor inicial é pego do st.session_state.setdefault acima.
     )
-    # Garante que o valor no session_state esteja sempre limpo de espaços extras
-    if 'frete_email_to' in st.session_state and st.session_state.frete_email_to is not None:
+    # CORREÇÃO CRÍTICA: Adicionar verificação de None antes de chamar .strip()
+    if st.session_state.get('frete_email_to') is not None and isinstance(st.session_state.frete_email_to, str):
         st.session_state.frete_email_to = st.session_state.frete_email_to.strip()
+    # FIM DA CORREÇÃO
+
 
     # 2. Entrada do Assunto
     st.text_input(
