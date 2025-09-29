@@ -387,10 +387,8 @@ def _display_email_sending_section(frete_type, total_calculated_brl, iof_usd_val
         key="frete_email_to" # Usa a chave do session_state
         # O valor inicial é pego do st.session_state.setdefault acima.
     )
-    # CORREÇÃO CRÍTICA: Adicionar verificação de None antes de chamar .strip()
-    if st.session_state.get('frete_email_to') is not None and isinstance(st.session_state.frete_email_to, str):
-        st.session_state.frete_email_to = st.session_state.frete_email_to.strip()
-    # FIM DA CORREÇÃO
+    # **REMOVIDA a atribuição direta com .strip() que causava o StreamlitAPIException**
+    # A limpeza e validação agora ocorrem dentro do bloco do botão Enviar.
 
 
     # 2. Entrada do Assunto
@@ -442,51 +440,51 @@ def _display_email_sending_section(frete_type, total_calculated_brl, iof_usd_val
     with col1:
         # ATENÇÃO: Substituindo use_container_width=True por width='stretch' (depreciação)
         if st.button("Enviar E-mail e Salvar", key=f"frete_send_email_and_save_btn_{frete_type}", width='stretch'):
-            if not st.session_state.frete_email_to:
+            
+            # **NOVA LÓGICA DE LIMPEZA E VALIDAÇÃO SEGURA**
+            raw_emails = st.session_state.get('frete_email_to') or "" # Garante que é uma string, mesmo se for None
+            list_of_recipients = [email.strip() for email in raw_emails.split(',') if email.strip()]
+
+            if not list_of_recipients:
                 st.warning("Por favor, preencha o(s) destinatário(s) do e-mail.")
             else:
-                list_of_recipients = [email.strip() for email in st.session_state.frete_email_to.split(',') if email.strip()]
-                
-                if list_of_recipients:
-                    with st.spinner("Enviando e-mail e salvando no banco de dados..."):
-                        # Captura o valor ATUALIZADO do corpo e assunto do e-mail
-                        current_body = st.session_state.frete_email_body_send
-                        current_subject = st.session_state.frete_email_subject_send
+                with st.spinner("Enviando e-mail e salvando no banco de dados..."):
+                    # Captura o valor ATUALIZADO do corpo e assunto do e-mail
+                    current_body = st.session_state.frete_email_body_send
+                    current_subject = st.session_state.frete_email_subject_send
+                    
+                    email_sent_successfully = _send_email_with_attachments_frete_internacional(
+                        to_emails=list_of_recipients,
+                        subject=current_subject,
+                        body=current_body,
+                        uploaded_files=st.session_state.frete_email_attachments_list
+                    )
+                    
+                    if email_sent_successfully:
+                        # Prepara os valores para salvar no DB
+                        if frete_type == "Aéreo":
+                            # Recálculo da diferença e IOF Aéreo para garantir o valor exato no momento do clique
+                            taxa_awb_brl = st.session_state.taxa_awb_aereo * (st.session_state.dolar_venda_abertura_editable * 1.03)
+                            dta_brl = st.session_state.dta_aereo * (st.session_state.dolar_venda_abertura_editable * 1.03)
+                            iof_aereo_calculated_usd = st.session_state.taxa_awb_aereo * 0.0038
+                            iof_aereo_brl = iof_aereo_calculated_usd * (st.session_state.dolar_venda_abertura_editable * 1.03)
+
+                            total_aereo_brl_calculated = (taxa_awb_brl + dta_brl + iof_aereo_brl + st.session_state.chd_aereo * (st.session_state.dolar_venda_abertura_editable * 1.03)) + st.session_state.agency_fee_aereo
+                            diferenca_aereo = total_aereo_brl_calculated - st.session_state.total_comparacao_aereo
+                            final_total_to_save = diferenca_aereo
+                            final_iof_usd = iof_aereo_calculated_usd
+                        else: # Marítimo
+                            final_total_to_save = total_calculated_brl
+                            final_iof_usd = iof_usd_val 
                         
-                        email_sent_successfully = _send_email_with_attachments_frete_internacional(
-                            to_emails=list_of_recipients,
-                            subject=current_subject,
-                            body=current_body,
-                            uploaded_files=st.session_state.frete_email_attachments_list
+                        _save_frete_internacional(
+                            frete_type, 
+                            final_total_to_save, 
+                            final_iof_usd, 
+                            dolar_cotacao_usado
                         )
                         
-                        if email_sent_successfully:
-                            # Prepara os valores para salvar no DB
-                            if frete_type == "Aéreo":
-                                # Recálculo da diferença e IOF Aéreo para garantir o valor exato no momento do clique
-                                taxa_awb_brl = st.session_state.taxa_awb_aereo * (st.session_state.dolar_venda_abertura_editable * 1.03)
-                                dta_brl = st.session_state.dta_aereo * (st.session_state.dolar_venda_abertura_editable * 1.03)
-                                iof_aereo_calculated_usd = st.session_state.taxa_awb_aereo * 0.0038
-                                iof_aereo_brl = iof_aereo_calculated_usd * (st.session_state.dolar_venda_abertura_editable * 1.03)
-
-                                total_aereo_brl_calculated = (taxa_awb_brl + dta_brl + iof_aereo_brl + st.session_state.chd_aereo * (st.session_state.dolar_venda_abertura_editable * 1.03)) + st.session_state.agency_fee_aereo
-                                diferenca_aereo = total_aereo_brl_calculated - st.session_state.total_comparacao_aereo
-                                final_total_to_save = diferenca_aereo
-                                final_iof_usd = iof_aereo_calculated_usd
-                            else: # Marítimo
-                                final_total_to_save = total_calculated_brl
-                                final_iof_usd = iof_usd_val 
-                            
-                            _save_frete_internacional(
-                                frete_type, 
-                                final_total_to_save, 
-                                final_iof_usd, 
-                                dolar_cotacao_usado
-                            )
-                            
-                    st.rerun()
-                else:
-                    st.warning("Nenhum destinatário válido encontrado.")
+                st.rerun()
 
 def show_calculo_frete_internacional_page():
     """
