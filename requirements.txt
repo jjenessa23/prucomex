@@ -11,4 +11,4 @@ google-cloud-firestore
 weasyprint 
 pdfplumber
 pytz
-libgdk-pixbuf
+libgdk-pixbuf-2.0-0
