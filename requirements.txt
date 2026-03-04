@@ -12,3 +12,4 @@ weasyprint
 pdfplumber
 pytz
 libgdk-pixbuf-2.0-0
+libgdk-pixbuf-xlib-2.0-0
